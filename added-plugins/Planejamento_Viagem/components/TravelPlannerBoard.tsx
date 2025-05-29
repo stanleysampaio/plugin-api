@@ -14,12 +14,17 @@ interface PontoRoteiro {
 
 interface TravelPlannerBoardProps {
   roteiro: DiaRoteiro[];
+  pontosDisponiveis: PontoRoteiro[];
   onUpdateRoteiro: (novoRoteiro: DiaRoteiro[]) => void;
+  onUpdateDisponiveis?: (novosDisponiveis: PontoRoteiro[]) => void;
 }
 
-export function TravelPlannerBoard({ roteiro, onUpdateRoteiro }: TravelPlannerBoardProps) {
-  const [pontosDisponiveis, setPontosDisponiveis] = React.useState<PontoRoteiro[]>([]);
-
+export function TravelPlannerBoard({
+  roteiro,
+  pontosDisponiveis,
+  onUpdateRoteiro,
+  onUpdateDisponiveis,
+}: TravelPlannerBoardProps) {
   const [dragItem, setDragItem] = React.useState<{
     ponto: PontoRoteiro;
     origem?: { diaIndex: number; pontoIndex: number };
@@ -32,27 +37,31 @@ export function TravelPlannerBoard({ roteiro, onUpdateRoteiro }: TravelPlannerBo
   function handleDrop(diaIndex: number) {
     if (!dragItem) return;
 
-    const updated = [...roteiro];
+    const updatedRoteiro = [...roteiro];
 
     if (dragItem.origem) {
-      // Remover do dia de origem
-      const origemPontos = [...updated[dragItem.origem.diaIndex].pontos];
+      // Remover do dia original
+      const origemPontos = [...updatedRoteiro[dragItem.origem.diaIndex].pontos];
       origemPontos.splice(dragItem.origem.pontoIndex, 1);
-      updated[dragItem.origem.diaIndex].pontos = origemPontos;
+      updatedRoteiro[dragItem.origem.diaIndex].pontos = origemPontos;
     } else {
       // Remover da lista de disponíveis
-      setPontosDisponiveis((prev) => prev.filter((p) => p.id !== dragItem.ponto.id));
+      const novos = pontosDisponiveis.filter((p) => p.id !== dragItem.ponto.id);
+      onUpdateDisponiveis?.(novos);
     }
 
-    updated[diaIndex].pontos.push(dragItem.ponto);
+    updatedRoteiro[diaIndex].pontos.push(dragItem.ponto);
+    onUpdateRoteiro(updatedRoteiro);
     setDragItem(null);
-    onUpdateRoteiro(updated);
   }
 
   return (
-    <div className="flex gap-4 overflow-x-auto">
+    <div className="flex gap-4 overflow-x-auto mt-6">
       <div className="min-w-[200px]">
         <h4 className="font-bold mb-2">Pontos Disponíveis</h4>
+        {pontosDisponiveis.length === 0 && (
+          <div className="text-xs italic text-gray-400">Todos os pontos estão alocados</div>
+        )}
         {pontosDisponiveis.map((ponto) => (
           <div
             key={ponto.id}
@@ -80,7 +89,7 @@ export function TravelPlannerBoard({ roteiro, onUpdateRoteiro }: TravelPlannerBo
             >
               <strong>{ponto.nome}</strong>
               {ponto.tipo === 'interesse' && ponto.tempo && (
-                <div className="text-xs text-gray-600">{ponto.tempo}h</div>
+                <div className="text-xs text-gray-600">{ponto.tempo} min</div>
               )}
             </div>
           ))}

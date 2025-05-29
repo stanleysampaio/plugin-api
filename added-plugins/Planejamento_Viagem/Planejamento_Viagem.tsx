@@ -22,6 +22,7 @@ function TerraTripperPluginContent() {
   const [roteiro, setRoteiro] = React.useState<any>(null);
   const [directions, setDirections] = React.useState<InstanceType<typeof Direction>[]>([]);
   const [roteiroBoard, setRoteiroBoard] = React.useState<any[]>([]); // DiaRoteiro[]
+  const [pontosDisponiveis, setPontosDisponiveis] = React.useState<any[]>([]);
 
   async function handleSubmit(roteiro: any) {
     setRoteiro(roteiro);
@@ -58,6 +59,11 @@ function TerraTripperPluginContent() {
       const initialBoard = generateInitialBoard(roteiro);
       const diasRoteiro = convertToDiaRoteiro(initialBoard);
       setRoteiroBoard(diasRoteiro);
+
+      // calcular pontos ainda não alocados
+      const alocadosIds = diasRoteiro.flatMap((dia) => dia.pontos.map((p: any) => p.id));
+      const disponiveis = roteiro.pontos.filter((p: any) => !alocadosIds.includes(p.id));
+      setPontosDisponiveis(disponiveis);
     } catch (e) {
       console.error('Erro ao desenhar rota:', e);
     }
@@ -83,7 +89,12 @@ function TerraTripperPluginContent() {
         <>
           <RoteiroResumo roteiro={roteiro} directions={directions} />
           <RoteiroAgenda dataIda={roteiro.dataIda} dataVolta={roteiro.dataVolta} />
-          <TravelPlannerBoard roteiro={roteiroBoard} onUpdateRoteiro={setRoteiroBoard} />
+          <TravelPlannerBoard
+            roteiro={roteiroBoard}
+            onUpdateRoteiro={setRoteiroBoard}
+            pontosDisponiveis={pontosDisponiveis}
+            setPontosDisponiveis={setPontosDisponiveis}
+          />
         </>
       )}
     </main>

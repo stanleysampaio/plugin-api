@@ -1,12 +1,10 @@
-// components/generateInitialBoard.tsx
-
-import { Roteiro, TipoPonto } from './types';
+import { PontoRoteiro, TipoPonto, Roteiro } from './types';
 
 export interface BoardItem {
   id: string;
   pointIndex: number;
   label: string;
-  time: number;
+  time: number; // tempo de consumo em minutos
   type: TipoPonto;
 }
 
@@ -29,10 +27,10 @@ export function generateInitialBoard(roteiro: Roteiro): BoardColumn[] {
   for (let day = 0; day < totalDays; day++) {
     const currentDate = new Date(startDate);
     currentDate.setDate(startDate.getDate() + day);
-    const label = currentDate.toLocaleDateString("pt-BR", {
-      weekday: "long",
-      day: "2-digit",
-      month: "2-digit",
+    const label = currentDate.toLocaleDateString('pt-BR', {
+      weekday: 'long',
+      day: '2-digit',
+      month: '2-digit',
     });
 
     board.push({
@@ -43,16 +41,15 @@ export function generateInitialBoard(roteiro: Roteiro): BoardColumn[] {
   }
 
   pontos.forEach((point, index) => {
-    const type = point.tipo;
-    const baseItem: BoardItem = {
-      id: `point-${index}`,
-      pointIndex: index,
-      label: point.label || `Ponto ${index + 1}`,
-      time: point.tempo ?? 0,
-      type,
-    };
+    if (point.tipo === 'base') {
+      const baseItem: BoardItem = {
+        id: `point-${index}`,
+        pointIndex: index,
+        label: point.label,
+        time: 0,
+        type: 'base',
+      };
 
-    if (type === "base") {
       if (board[0]) board[0].items.unshift(baseItem);
       if (board.length > 1) {
         board[board.length - 1].items.push({
@@ -62,9 +59,17 @@ export function generateInitialBoard(roteiro: Roteiro): BoardColumn[] {
       }
     }
 
-    if (type === "interesse") {
+    if (point.tipo === 'interesse') {
+      const item: BoardItem = {
+        id: `point-${index}`,
+        pointIndex: index,
+        label: point.label,
+        time: point.tempo ?? 120,
+        type: 'interesse',
+      };
+
       const dayIndex = index % totalDays;
-      board[dayIndex].items.push(baseItem);
+      board[dayIndex].items.push(item);
     }
   });
 
