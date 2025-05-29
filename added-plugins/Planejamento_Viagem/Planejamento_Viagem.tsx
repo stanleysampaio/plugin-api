@@ -1,5 +1,10 @@
 import { RoteiroForm } from './components/RoteiroForm';
 import { RoteiroResumo } from './components/RoteiroResumo';
+import { RoteiroAgenda } from './components/RoteiroAgenda';
+import { TravelPlannerBoard } from './components/TravelPlannerBoard';
+
+import { generateInitialBoard } from './components/generateInitialBoard';
+import { convertToDiaRoteiro } from './components/convertToDiaRoteiro';
 
 const {
   React,
@@ -14,47 +19,49 @@ const { MdOutlineMap } = ReactIcons?.md ?? {};
 
 function TerraTripperPluginContent() {
   const { changeMenuOption } = useMenu();
-  const [roteiro, setRoteiro] = React.useState(null);
+  const [roteiro, setRoteiro] = React.useState<any>(null);
   const [directions, setDirections] = React.useState<InstanceType<typeof Direction>[]>([]);
+  const [roteiroBoard, setRoteiroBoard] = React.useState<any[]>([]); // DiaRoteiro[]
 
   async function handleSubmit(roteiro: any) {
-  setRoteiro(roteiro);
-  const { fetchDirectionsController } = window.PluginDependencies;
-  const directionService = window.PluginDependencies.directionService;
+    setRoteiro(roteiro);
+    const { fetchDirectionsController } = window.PluginDependencies;
 
-  try {
-    const directions: InstanceType<typeof Direction>[] = [];
+    try {
+      const directions: InstanceType<typeof Direction>[] = [];
 
-    for (let i = 0; i < roteiro.pontos.length - 1; i++) {
-      const origin = roteiro.pontos[i];
-      const destination = roteiro.pontos[i + 1];
+      for (let i = 0; i < roteiro.pontos.length - 1; i++) {
+        const origin = roteiro.pontos[i];
+        const destination = roteiro.pontos[i + 1];
 
-      const result = await fetchDirectionsController.execute({
-        origin,
-        destination,
-        profile: "driving-car", // pode ajustar se houver outra variável
-        preference: "recommended",
-        options: {
-          avoidBorders: "none",
-          avoidFeatures: {
-            highways: false,
-            tollways: false,
-            ferries: false,
+        const result = await fetchDirectionsController.execute({
+          origin,
+          destination,
+          profile: 'driving-car',
+          preference: 'recommended',
+          options: {
+            avoidBorders: 'none',
+            avoidFeatures: {
+              highways: false,
+              tollways: false,
+              ferries: false,
+            },
           },
-        },
-      });
+        });
 
-      await directionService.addDirection(result);
-      directions.push(result);
+        await directionService.addDirection(result);
+        directions.push(result);
+      }
+
+      setDirections(directions);
+
+      const initialBoard = generateInitialBoard(roteiro);
+      const diasRoteiro = convertToDiaRoteiro(initialBoard);
+      setRoteiroBoard(diasRoteiro);
+    } catch (e) {
+      console.error('Erro ao desenhar rota:', e);
     }
-
-    setDirections(directions);
-  } catch (e) {
-    console.error("Erro ao desenhar rota:", e);
   }
-}
-
-
 
   return (
     <main className="p-4 flex flex-col gap-4">
@@ -69,8 +76,16 @@ function TerraTripperPluginContent() {
       )}
 
       <h2 className="text-xl font-bold">Planejador de Roteiro de Viagem</h2>
+
       <RoteiroForm onSubmit={handleSubmit} />
-      {roteiro && <RoteiroResumo roteiro={roteiro} directions={directions} />}
+
+      {roteiro && (
+        <>
+          <RoteiroResumo roteiro={roteiro} directions={directions} />
+          <RoteiroAgenda dataIda={roteiro.dataIda} dataVolta={roteiro.dataVolta} />
+          <TravelPlannerBoard roteiro={roteiroBoard} onUpdateRoteiro={setRoteiroBoard} />
+        </>
+      )}
     </main>
   );
 }
