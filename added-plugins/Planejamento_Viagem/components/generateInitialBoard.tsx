@@ -40,38 +40,43 @@ export function generateInitialBoard(roteiro: Roteiro): BoardColumn[] {
     });
   }
 
-  pontos.forEach((point, index) => {
-    if (point.tipo === 'base') {
-      const baseItem: BoardItem = {
-        id: `point-${index}`,
-        pointIndex: index,
-        label: point.label,
-        time: 0,
-        type: 'base',
-      };
+  const pontosBase = pontos.filter((p) => p.tipo === 'base');
+  const pontosInteresse = pontos.filter((p) => p.tipo === 'interesse');
 
-      if (board[0]) board[0].items.unshift(baseItem);
-      if (board.length > 1) {
-        board[board.length - 1].items.push({
-          ...baseItem,
-          id: `point-${index}-end`,
-        });
-      }
-    }
+  // Colocar ponto base no início do primeiro dia
+  if (pontosBase.length > 0) {
+    board[0].items.push({
+      id: `point-base-start`,
+      pointIndex: pontos.indexOf(pontosBase[0]),
+      label: pontosBase[0].label,
+      time: 0,
+      type: 'base',
+    });
+  }
 
-    if (point.tipo === 'interesse') {
-      const item: BoardItem = {
-        id: `point-${index}`,
-        pointIndex: index,
-        label: point.label,
-        time: point.tempo ?? 120,
-        type: 'interesse',
-      };
+  // Distribuir pontos de interesse na ordem de criação (sem embaralhar)
+  pontosInteresse.forEach((point, index) => {
+    const dayIndex = Math.floor(index / Math.ceil(pontosInteresse.length / totalDays));
 
-      const dayIndex = index % totalDays;
-      board[dayIndex].items.push(item);
-    }
+    board[dayIndex].items.push({
+      id: `point-${index}`,
+      pointIndex: pontos.indexOf(point),
+      label: point.label,
+      time: point.tempo ?? 120,
+      type: 'interesse',
+    });
   });
+
+  // Colocar ponto base no fim do último dia
+  if (pontosBase.length > 1) {
+    board[board.length - 1].items.push({
+      id: `point-base-end`,
+      pointIndex: pontos.indexOf(pontosBase[pontosBase.length - 1]),
+      label: pontosBase[pontosBase.length - 1].label,
+      time: 0,
+      type: 'base',
+    });
+  }
 
   return board;
 }
