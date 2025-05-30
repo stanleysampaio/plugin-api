@@ -25,48 +25,52 @@ function TerraTripperPluginContent() {
   const [hover, setHover] = React.useState(false); // para hover do botão
 
   async function handleSubmit(roteiro: any) {
-    setRoteiro(roteiro);
-    const { fetchDirectionsController } = window.PluginDependencies;
+  setRoteiro(roteiro);
+  const { fetchDirectionsController } = window.PluginDependencies;
 
-    try {
-      const directions: InstanceType<typeof Direction>[] = [];
+  try {
+    const directions: InstanceType<typeof Direction>[] = [];
 
-      for (let i = 0; i < roteiro.pontos.length - 1; i++) {
-        const origin = roteiro.pontos[i];
-        const destination = roteiro.pontos[i + 1];
+    for (let i = 0; i < roteiro.pontos.length - 1; i++) {
+      const origin = roteiro.pontos[i];
+      const destination = roteiro.pontos[i + 1];
 
-        const result = await fetchDirectionsController.execute({
-          origin,
-          destination,
-          profile: 'driving-car',
-          preference: 'recommended',
-          options: {
-            avoidBorders: 'none',
-            avoidFeatures: {
-              highways: false,
-              tollways: false,
-              ferries: false,
-            },
+      const result = await fetchDirectionsController.execute({
+        origin,
+        destination,
+        profile: 'driving-car',
+        preference: 'recommended',
+        options: {
+          avoidBorders: 'none',
+          avoidFeatures: {
+            highways: false,
+            tollways: false,
+            ferries: false,
           },
-        });
+        },
+      });
 
-        await directionService.addDirection(result);
-        directions.push(result);
-      }
-
-      setDirections(directions);
-
-      const initialBoard = generateInitialBoard(roteiro);
-      const diasRoteiro = convertToDiaRoteiro(initialBoard);
-      setRoteiroBoard(diasRoteiro);
-
-      const alocadosIds = diasRoteiro.flatMap((dia) => dia.pontos.map((p: any) => p.id));
-      const disponiveis = roteiro.pontos.filter((p: any) => !alocadosIds.includes(p.id));
-      setPontosDisponiveis(disponiveis);
-    } catch (e) {
-      console.error('Erro ao desenhar rota:', e);
+      await directionService.addDirection(result);
+      directions.push(result);
     }
+
+    setDirections(directions);
+
+    // 🛠️ Aqui estava o problema:
+    const initialBoard = await generateInitialBoard(roteiro);
+    console.log('Board gerado:', initialBoard)
+    const diasRoteiro = convertToDiaRoteiro(initialBoard);
+    console.log('Dias convertidos:', diasRoteiro);
+    setRoteiroBoard(diasRoteiro);
+
+    const alocadosIds = diasRoteiro.flatMap((dia) => dia.pontos.map((p: any) => p.id));
+    const disponiveis = roteiro.pontos.filter((p: any) => !alocadosIds.includes(p.id));
+    setPontosDisponiveis(disponiveis);
+  } catch (e) {
+    console.error('Erro ao desenhar rota:', e);
   }
+}
+
 
   return (
     <main className="p-4 flex flex-col gap-4 relative">

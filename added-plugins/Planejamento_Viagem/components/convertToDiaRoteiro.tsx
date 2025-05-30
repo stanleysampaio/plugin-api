@@ -19,8 +19,8 @@ export function convertToDiaRoteiro(board: BoardColumn[]): DiaRoteiro[] {
     data: col.label,
     pontos: col.items.map((item) => ({
       id: item.id,
-      nome: item.label,
-      tipo: item.type,
+      nome: item.label, // CORRIGIDO
+      tipo: item.type,  // CORRIGIDO
       tempo: item.time,
     })),
   }));

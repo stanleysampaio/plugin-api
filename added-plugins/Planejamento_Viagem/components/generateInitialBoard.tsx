@@ -1,20 +1,4 @@
-import { PontoRoteiro, TipoPonto, Roteiro } from './types';
-
-export interface BoardItem {
-  id: string;
-  pointIndex: number;
-  label: string;
-  time: number; // tempo de consumo em minutos
-  type: TipoPonto;
-}
-
-export interface BoardColumn {
-  id: string;
-  label: string;
-  items: BoardItem[];
-}
-
-export function generateInitialBoard(roteiro: Roteiro): BoardColumn[] {
+export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColumn[]> {
   const { dataIda, dataVolta, pontos } = roteiro;
   const startDate = new Date(dataIda);
   const endDate = new Date(dataVolta);
@@ -43,39 +27,127 @@ export function generateInitialBoard(roteiro: Roteiro): BoardColumn[] {
   const pontosBase = pontos.filter((p) => p.tipo === 'base');
   const pontosInteresse = pontos.filter((p) => p.tipo === 'interesse');
 
-  // Colocar ponto base no início do primeiro dia
-  if (pontosBase.length > 0) {
-    board[0].items.push({
-      id: `point-base-start`,
-      pointIndex: pontos.indexOf(pontosBase[0]),
-      label: pontosBase[0].label,
-      time: 0,
-      type: 'base',
-    });
+  let agrupados;
+  try {
+    agrupados = await groupPointsByBase(pontosBase, pontosInteresse);
+    const totalAlocados = Object.values(agrupados).reduce(
+      (acc, grupo) => acc + grupo.pontos.length,
+      0
+    );
+
+    if (totalAlocados === 0) throw new Error('Fallback para precedência');
+  } catch (e) {
+    console.warn('Agrupamento falhou, aplicando fallback por precedência...', e);
+
+    const chunkSize = Math.ceil(pontosInteresse.length / totalDays);
+    let interesseIndex = 0;
+
+    for (let i = 0; i < totalDays; i++) {
+      const dia = board[i];
+      const base = pontosBase[i % pontosBase.length];
+      const baseIndex = pontos.indexOf(base);
+
+      dia.items.push({
+        id: `base-${i}-start`,
+        pointIndex: baseIndex,
+        label: base.label,
+        time: 0,
+        type: 'base',
+      });
+
+      for (let j = 0; j < chunkSize && interesseIndex < pontosInteresse.length; j++) {
+        const ponto = pontosInteresse[interesseIndex];
+        const pontoIndex = pontos.indexOf(ponto);
+
+        dia.items.push({
+          id: `ponto-${pontoIndex}`,
+          pointIndex: pontoIndex,
+          label: ponto.label,
+          time: ponto.tempo ?? 120,
+          type: 'interesse',
+        });
+
+        interesseIndex++;
+      }
+
+      dia.items.push({
+        id: `base-${i}-end`,
+        pointIndex: baseIndex,
+        label: base.label,
+        time: 0,
+        type: 'base',
+      });
+
+      // ✅ Garante que o ponto base apareça fixamente no início do próximo dia
+      if (i + 1 < totalDays) {
+        board[i + 1].items.unshift({
+          id: `base-replica-dia${i + 1}`,
+          pointIndex: baseIndex,
+          label: base.label,
+          time: 0,
+          type: 'base',
+          fixo: true,
+        });
+      }
+    }
+
+    return board;
   }
 
-  // Distribuir pontos de interesse na ordem de criação (sem embaralhar)
-  pontosInteresse.forEach((point, index) => {
-    const dayIndex = Math.floor(index / Math.ceil(pontosInteresse.length / totalDays));
+  // Agrupamento por base
+  let diaAtual = 0;
+  const diasPorBase = Math.ceil(totalDays / Object.keys(agrupados).length);
 
-    board[dayIndex].items.push({
-      id: `point-${index}`,
-      pointIndex: pontos.indexOf(point),
-      label: point.label,
-      time: point.tempo ?? 120,
-      type: 'interesse',
-    });
-  });
+  for (const key of Object.keys(agrupados)) {
+    const { base, pontos: pontosDoGrupo } = agrupados[parseInt(key)];
+    const baseIndex = roteiro.pontos.indexOf(base);
+    const chunkSize = Math.ceil(pontosDoGrupo.length / diasPorBase);
 
-  // Colocar ponto base no fim do último dia
-  if (pontosBase.length > 1) {
-    board[board.length - 1].items.push({
-      id: `point-base-end`,
-      pointIndex: pontos.indexOf(pontosBase[pontosBase.length - 1]),
-      label: pontosBase[pontosBase.length - 1].label,
-      time: 0,
-      type: 'base',
-    });
+    for (let i = 0; i < pontosDoGrupo.length; i += chunkSize) {
+      const pontosDoDia = pontosDoGrupo.slice(i, i + chunkSize);
+      const col = board[diaAtual];
+      if (!col) break;
+
+      col.items.push({
+        id: `base-${diaAtual}-start`,
+        pointIndex: baseIndex,
+        label: base.label,
+        time: 0,
+        type: 'base',
+      });
+
+      for (const ponto of pontosDoDia) {
+        col.items.push({
+          id: `ponto-${ponto.id}`,
+          pointIndex: roteiro.pontos.indexOf(ponto),
+          label: ponto.label,
+          time: ponto.tempo ?? 120,
+          type: 'interesse',
+        });
+      }
+
+      col.items.push({
+        id: `base-${diaAtual}-end`,
+        pointIndex: baseIndex,
+        label: base.label,
+        time: 0,
+        type: 'base',
+      });
+
+      if (diaAtual + 1 < totalDays) {
+        board[diaAtual + 1].items.unshift({
+          id: `base-replica-dia${diaAtual + 1}`,
+          pointIndex: baseIndex,
+          label: base.label,
+          time: 0,
+          type: 'base',
+          fixo: true,
+        });
+      }
+
+      diaAtual++;
+      if (diaAtual >= totalDays) break;
+    }
   }
 
   return board;

@@ -9,6 +9,7 @@ export interface PontoRoteiro {
   coordinates: [number, number];
   tipo: TipoPonto;
   tempo?: number; // Em minutos (apenas para pontos de interesse)
+  fixo?: boolean;
 }
 
 // Representa a agenda de um único dia
