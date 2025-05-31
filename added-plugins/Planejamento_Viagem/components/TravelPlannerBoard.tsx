@@ -39,7 +39,7 @@ export function TravelPlannerBoard({
     setDragItem({ ponto, origem });
   }
 
-  function handleDrop(diaIndex: number) {
+  function handleDrop(diaIndex: number, insertIndex?: number) {
     if (!dragItem) return;
 
     const updatedRoteiro = [...roteiro.map(d => ({ ...d, pontos: [...d.pontos] }))];
@@ -54,7 +54,12 @@ export function TravelPlannerBoard({
       onUpdateDisponiveis?.(novos);
     }
 
-    updatedRoteiro[diaIndex].pontos.push(dragItem.ponto);
+    const destinoDia = updatedRoteiro[diaIndex];
+    if (insertIndex !== undefined) {
+      destinoDia.pontos.splice(insertIndex, 0, dragItem.ponto);
+    } else {
+      destinoDia.pontos.push(dragItem.ponto);
+    }
 
     const sincronizado = sincronizarBasesEntreDias(updatedRoteiro);
     onUpdateRoteiro(sincronizado);
@@ -128,6 +133,8 @@ export function TravelPlannerBoard({
               onDragStart={() =>
                 !ponto.fixo && handleDragStart(ponto, { diaIndex, pontoIndex })
               }
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => handleDrop(diaIndex, pontoIndex)}
               title={ponto.fixo ? 'Ponto fixo de base (não editável)' : ''}
             >
               <strong>{ponto.nome}</strong>

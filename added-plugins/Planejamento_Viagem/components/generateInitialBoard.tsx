@@ -1,3 +1,54 @@
+import { PontoRoteiro, TipoPonto, Roteiro } from './types';
+import { groupPointsByBase } from './groupPointsByBase';
+
+export interface BoardItem {
+  id: string;
+  pointIndex: number;
+  label: string;
+  time: number;
+  type: TipoPonto;
+  fixo?: boolean;
+}
+
+export interface BoardColumn {
+  id: string;
+  label: string;
+  items: BoardItem[];
+}
+
+function sincronizarBasesEntreDias(board: BoardColumn[]): BoardColumn[] {
+  const novoBoard = board.map((col) => ({
+    ...col,
+    items: [...col.items],
+  }));
+
+  for (let i = 0; i < novoBoard.length - 1; i++) {
+    const diaAtual = novoBoard[i];
+    const diaSeguinte = novoBoard[i + 1];
+
+    const ultimaBase = [...diaAtual.items].reverse().find((item) => item.type === 'base');
+    if (!ultimaBase) continue;
+
+    const primeiro = diaSeguinte.items[0];
+
+    if (primeiro?.fixo && primeiro.pointIndex === ultimaBase.pointIndex) {
+      continue;
+    }
+
+    if (primeiro?.fixo) {
+      diaSeguinte.items.shift();
+    }
+
+    diaSeguinte.items.unshift({
+      ...ultimaBase,
+      fixo: true,
+      id: `${ultimaBase.id}-replica-dia${i + 1}`,
+    });
+  }
+
+  return novoBoard;
+}
+
 export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColumn[]> {
   const { dataIda, dataVolta, pontos } = roteiro;
   const startDate = new Date(dataIda);
@@ -27,6 +78,7 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
   const pontosBase = pontos.filter((p) => p.tipo === 'base');
   const pontosInteresse = pontos.filter((p) => p.tipo === 'interesse');
 
+  // Tenta agrupar por base mais próxima
   let agrupados;
   try {
     agrupados = await groupPointsByBase(pontosBase, pontosInteresse);
@@ -47,13 +99,25 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
       const base = pontosBase[i % pontosBase.length];
       const baseIndex = pontos.indexOf(base);
 
-      dia.items.push({
-        id: `base-${i}-start`,
-        pointIndex: baseIndex,
-        label: base.label,
-        time: 0,
-        type: 'base',
-      });
+      // ✅ Garante que o primeiro dia inicie com o ponto de origem como fixo
+      if (i === 0) {
+        dia.items.unshift({
+          id: `base-origem-fixa`,
+          pointIndex: baseIndex,
+          label: base.label,
+          time: 0,
+          type: 'base',
+          fixo: true,
+        });
+      } else {
+        dia.items.push({
+          id: `base-${i}-start`,
+          pointIndex: baseIndex,
+          label: base.label,
+          time: 0,
+          type: 'base',
+        });
+      }
 
       for (let j = 0; j < chunkSize && interesseIndex < pontosInteresse.length; j++) {
         const ponto = pontosInteresse[interesseIndex];
@@ -77,44 +141,44 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
         time: 0,
         type: 'base',
       });
+    }
 
-      // ✅ Garante que o ponto base apareça fixamente no início do próximo dia
-      if (i + 1 < totalDays) {
-        board[i + 1].items.unshift({
-          id: `base-replica-dia${i + 1}`,
+    return sincronizarBasesEntreDias(board);
+  }
+
+  // Agrupamento por distância bem-sucedido
+  let diaAtual = 0;
+  const diasPorBase = Math.ceil(totalDays / Object.keys(agrupados).length);
+
+  for (const key of Object.keys(agrupados)) {
+    const { base, pontos: pontosGrupo } = agrupados[parseInt(key)];
+    const baseIndex = roteiro.pontos.indexOf(base);
+
+    const chunkSize = Math.ceil(pontosGrupo.length / diasPorBase);
+
+    for (let i = 0; i < pontosGrupo.length; i += chunkSize) {
+      const pontosDoDia = pontosGrupo.slice(i, i + chunkSize);
+      const col = board[diaAtual];
+      if (!col) break;
+
+      if (diaAtual === 0) {
+        col.items.unshift({
+          id: `base-origem-fixa`,
           pointIndex: baseIndex,
           label: base.label,
           time: 0,
           type: 'base',
           fixo: true,
         });
+      } else {
+        col.items.push({
+          id: `base-${diaAtual}-start`,
+          pointIndex: baseIndex,
+          label: base.label,
+          time: 0,
+          type: 'base',
+        });
       }
-    }
-
-    return board;
-  }
-
-  // Agrupamento por base
-  let diaAtual = 0;
-  const diasPorBase = Math.ceil(totalDays / Object.keys(agrupados).length);
-
-  for (const key of Object.keys(agrupados)) {
-    const { base, pontos: pontosDoGrupo } = agrupados[parseInt(key)];
-    const baseIndex = roteiro.pontos.indexOf(base);
-    const chunkSize = Math.ceil(pontosDoGrupo.length / diasPorBase);
-
-    for (let i = 0; i < pontosDoGrupo.length; i += chunkSize) {
-      const pontosDoDia = pontosDoGrupo.slice(i, i + chunkSize);
-      const col = board[diaAtual];
-      if (!col) break;
-
-      col.items.push({
-        id: `base-${diaAtual}-start`,
-        pointIndex: baseIndex,
-        label: base.label,
-        time: 0,
-        type: 'base',
-      });
 
       for (const ponto of pontosDoDia) {
         col.items.push({
@@ -134,21 +198,10 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
         type: 'base',
       });
 
-      if (diaAtual + 1 < totalDays) {
-        board[diaAtual + 1].items.unshift({
-          id: `base-replica-dia${diaAtual + 1}`,
-          pointIndex: baseIndex,
-          label: base.label,
-          time: 0,
-          type: 'base',
-          fixo: true,
-        });
-      }
-
       diaAtual++;
       if (diaAtual >= totalDays) break;
     }
   }
 
-  return board;
+  return sincronizarBasesEntreDias(board);
 }

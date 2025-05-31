@@ -7,6 +7,7 @@ export interface PontoRoteiro {
   nome: string;
   tipo: 'base' | 'interesse';
   tempo?: number;
+  fixo?: boolean; // ✅ necessário para identificar pontos replicados
 }
 
 export interface DiaRoteiro {
@@ -19,9 +20,10 @@ export function convertToDiaRoteiro(board: BoardColumn[]): DiaRoteiro[] {
     data: col.label,
     pontos: col.items.map((item) => ({
       id: item.id,
-      nome: item.label, // CORRIGIDO
-      tipo: item.type,  // CORRIGIDO
+      nome: item.label,
+      tipo: item.type,
       tempo: item.time,
+      fixo: item.fixo ?? false, // ✅ mantém o status fixo
     })),
   }));
 }
