@@ -130,14 +130,7 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
           type: 'base',
           fixo: true,
         });
-      } else {
-        col.items.push({
-          id: `base-${diaAtual}-start`,
-          pointIndex: baseIndex,
-          label: base.label,
-          time: 0,
-          type: 'base',
-        });
+      
       }
 
       for (const ponto of pontosDoDia) {
