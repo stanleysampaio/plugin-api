@@ -11,8 +11,8 @@ const {
   useMenu,
   Direction,
 } = window.PluginDependencies;
-const directionService = window.PluginDependencies.directionService;
 
+const directionService = window.PluginDependencies.directionService;
 const { MdOutlineMap } = ReactIcons?.md ?? {};
 
 function TerraTripperPluginContent() {
@@ -22,55 +22,52 @@ function TerraTripperPluginContent() {
   const [roteiroBoard, setRoteiroBoard] = React.useState<any[]>([]);
   const [pontosDisponiveis, setPontosDisponiveis] = React.useState<any[]>([]);
   const [mostrarQuadro, setMostrarQuadro] = React.useState(false);
-  const [hover, setHover] = React.useState(false); // para hover do botão
+  const [hover, setHover] = React.useState(false);
 
   async function handleSubmit(roteiro: any) {
-  setRoteiro(roteiro);
-  const { fetchDirectionsController } = window.PluginDependencies;
+    setRoteiro(roteiro);
+    const { fetchDirectionsController } = window.PluginDependencies;
 
-  try {
-    const directions: InstanceType<typeof Direction>[] = [];
+    try {
+      const directions: InstanceType<typeof Direction>[] = [];
 
-    for (let i = 0; i < roteiro.pontos.length - 1; i++) {
-      const origin = roteiro.pontos[i];
-      const destination = roteiro.pontos[i + 1];
+      for (let i = 0; i < roteiro.pontos.length - 1; i++) {
+        const origin = roteiro.pontos[i];
+        const destination = roteiro.pontos[i + 1];
 
-      const result = await fetchDirectionsController.execute({
-        origin,
-        destination,
-        profile: 'driving-car',
-        preference: 'recommended',
-        options: {
-          avoidBorders: 'none',
-          avoidFeatures: {
-            highways: false,
-            tollways: false,
-            ferries: false,
+        const result = await fetchDirectionsController.execute({
+          origin,
+          destination,
+          profile: 'driving-car',
+          preference: 'recommended',
+          options: {
+            avoidBorders: 'none',
+            avoidFeatures: {
+              highways: false,
+              tollways: false,
+              ferries: false,
+            },
           },
-        },
-      });
+        });
 
-      await directionService.addDirection(result);
-      directions.push(result);
+        await directionService.addDirection(result);
+        directions.push(result);
+      }
+
+      setDirections(directions);
+
+      // ✅ Gere o board com os dados originais
+      const initialBoard = await generateInitialBoard(roteiro);
+      const diasRoteiro = convertToDiaRoteiro(initialBoard, roteiro.pontos);
+      setRoteiroBoard(diasRoteiro);
+
+      const alocadosIds = diasRoteiro.flatMap((dia) => dia.pontos.map((p: any) => p.id));
+      const disponiveis = roteiro.pontos.filter((p: any) => !alocadosIds.includes(p.id));
+      setPontosDisponiveis(disponiveis);
+    } catch (e) {
+      console.error('Erro ao desenhar rota:', e);
     }
-
-    setDirections(directions);
-
-    // 🛠️ Aqui estava o problema:
-    const initialBoard = await generateInitialBoard(roteiro);
-    console.log('Board gerado:', initialBoard)
-    const diasRoteiro = convertToDiaRoteiro(initialBoard);
-    console.log('Dias convertidos:', diasRoteiro);
-    setRoteiroBoard(diasRoteiro);
-
-    const alocadosIds = diasRoteiro.flatMap((dia) => dia.pontos.map((p: any) => p.id));
-    const disponiveis = roteiro.pontos.filter((p: any) => !alocadosIds.includes(p.id));
-    setPontosDisponiveis(disponiveis);
-  } catch (e) {
-    console.error('Erro ao desenhar rota:', e);
   }
-}
-
 
   return (
     <main className="p-4 flex flex-col gap-4 relative">
@@ -92,7 +89,6 @@ function TerraTripperPluginContent() {
         <>
           <RoteiroResumo roteiro={roteiro} directions={directions} />
 
-          {/* BOTÃO ABRIR – visível apenas se o quadro estiver fechado */}
           {!mostrarQuadro && (
             <div className="w-full mt-4">
               <button
@@ -109,7 +105,6 @@ function TerraTripperPluginContent() {
             </div>
           )}
 
-          {/* DRAWER COM QUADRO E BOTÃO DE FECHAR */}
           {mostrarQuadro && (
             <div
               className="fixed bottom-0 z-40 bg-white border-t border-l border-gray-300 shadow-xl p-4"
@@ -125,7 +120,7 @@ function TerraTripperPluginContent() {
                 roteiro={roteiroBoard}
                 onUpdateRoteiro={setRoteiroBoard}
                 pontosDisponiveis={pontosDisponiveis}
-                setPontosDisponiveis={setPontosDisponiveis}
+                onUpdateDisponiveis={setPontosDisponiveis} // ✅ nome correto da prop
               />
 
               <div className="mt-4">
@@ -148,11 +143,9 @@ export default function TerraTripperPlugin() {
   return <TerraTripperPluginContent />;
 }
 
-// ⬇️ STYLES
-
 const styles = {
   botaoPrincipal: {
-    backgroundColor: '#2563EB', // azul-600
+    backgroundColor: '#2563EB',
     color: 'white',
     padding: '0.5rem 1rem',
     fontWeight: 600,
@@ -165,7 +158,7 @@ const styles = {
     maxWidth: 'fit-content',
   },
   botaoFechar: {
-    backgroundColor: '#DC2626', // vermelho-600
+    backgroundColor: '#DC2626',
     color: 'white',
     padding: '0.5rem 1rem',
     fontWeight: 600,

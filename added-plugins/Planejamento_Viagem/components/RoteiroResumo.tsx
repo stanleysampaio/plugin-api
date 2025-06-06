@@ -30,12 +30,15 @@ interface Props {
 export function RoteiroResumo({ roteiro, directions = [] }: Props) {
   const total = roteiro.pontos.length;
 
-  const formatPoint = (p: PointResult | undefined) =>
-    p?.label || (p?.coordinates?.length === 2 ? p.coordinates.join(", ") : "---");
+  const formatPoint = (ponto?: PointResult): string =>
+    ponto?.label?.trim() ||
+    (Array.isArray(ponto?.coordinates) && ponto.coordinates.length === 2
+      ? ponto.coordinates.join(', ')
+      : '---');
 
   const origem = formatPoint(roteiro.pontos[0]);
   const destino = formatPoint(roteiro.pontos[total - 1]);
-  const paradas = roteiro.pontos.slice(1, -1);
+  const paradas = roteiro.pontos.slice(1, total - 1);
 
   return (
     <section className="mt-4 border-t pt-4 bg-blue-50 p-4 rounded">
@@ -45,16 +48,18 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
         <li><strong>Data de Volta:</strong> {roteiro.dataVolta}</li>
         <li><strong>Origem:</strong> {origem}</li>
         <li><strong>Destino:</strong> {destino}</li>
+
         {paradas.length > 0 && (
           <li>
             <strong>Paradas:</strong>
             <ul className="list-circle ml-4 mt-1">
-              {paradas.map((p, i) => (
-                <li key={i}>{formatPoint(p)}</li>
+              {paradas.map((p, index) => (
+                <li key={index}>{formatPoint(p)}</li>
               ))}
             </ul>
           </li>
         )}
+
         <li><strong>Total de rotas geradas:</strong> {directions.length}</li>
       </ul>
     </section>

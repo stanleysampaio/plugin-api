@@ -9,26 +9,32 @@ interface AgrupamentoPorBase {
   };
 }
 
+/**
+ * Agrupa os pontos de interesse por base mais próxima,
+ * utilizando a API de rotas via `fetchDirectionsController`.
+ */
 export async function groupPointsByBase(
   bases: PontoRoteiro[],
   interesses: PontoRoteiro[]
 ): Promise<AgrupamentoPorBase> {
   const agrupamento: AgrupamentoPorBase = {};
 
-  bases.forEach((base, i) => {
-    agrupamento[i] = {
+  // Inicializa estrutura
+  bases.forEach((base, index) => {
+    agrupamento[index] = {
       base,
       pontos: [],
     };
   });
 
+  // Para cada ponto de interesse, busca a base mais próxima
   for (const ponto of interesses) {
     let menorDistancia = Infinity;
     let baseMaisProximaIndex = -1;
 
     for (let i = 0; i < bases.length; i++) {
       const base = bases[i];
-      
+
       try {
         const rota = await fetchDirectionsController.execute({
           origin: base,
@@ -45,20 +51,16 @@ export async function groupPointsByBase(
           },
         });
 
-        if (!rota || !rota.features || rota.features.length === 0) {
-          console.warn(`Rota inválida entre "${base.label}" e "${ponto.label}"`, rota);
-          continue;
-        }
-
-        const distancia = rota.features[0].properties?.summary?.distance ?? Infinity;
-        console.log(`Distância entre "${base.label}" e "${ponto.label}":`, distancia);
+        const distancia = rota?.features?.[0]?.properties?.summary?.distance ?? Infinity;
 
         if (distancia < menorDistancia) {
           menorDistancia = distancia;
           baseMaisProximaIndex = i;
         }
+
+        // console.log(`Distância entre "${base.label}" e "${ponto.label}": ${distancia}`);
       } catch (err) {
-        console.error(`Erro ao calcular rota entre base ${i} e ponto ${ponto.label}`, err);
+        console.warn(`Erro ao calcular rota de "${base.label}" até "${ponto.label}":`, err);
       }
     }
 

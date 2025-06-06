@@ -6,7 +6,7 @@ interface PointResult {
   name?: string;
   city?: string;
   uf?: string;
-  coordinates: number[];
+  coordinates?: number[];
   tipo?: 'base' | 'interesse';
   tempo?: number;
 }
@@ -33,8 +33,8 @@ export function RoteiroForm({ onSubmit }: Props) {
   const [interesses, setInteresses] = React.useState('');
   const [tempo, setTempo] = React.useState(1);
   const [pontos, setPontos] = React.useState<PointResult[]>([
-    { uid: generateUid(), label: '', coordinates: [], tipo: 'base' },
-    { uid: generateUid(), label: '', coordinates: [], tipo: 'interesse', tempo: 60 },
+    { uid: generateUid(), tipo: 'base' },
+    { uid: generateUid(), tipo: 'interesse', tempo: 60 },
   ]);
 
   function updatePoint(index: number, newValue?: PointResult) {
@@ -44,9 +44,7 @@ export function RoteiroForm({ onSubmit }: Props) {
 
     const label =
       newValue.label ||
-      [newValue.name, newValue.city, newValue.uf]
-        .filter(Boolean)
-        .join(', ') ||
+      [newValue.name, newValue.city, newValue.uf].filter(Boolean).join(', ') ||
       `${newValue.coordinates[1].toFixed(6)}, ${newValue.coordinates[0].toFixed(6)}`;
 
     updated[index] = {
@@ -62,11 +60,9 @@ export function RoteiroForm({ onSubmit }: Props) {
     const updated = [...pontos];
     updated[index].tipo = tipo;
 
-    // se for ponto de interesse, garantir tempo
     if (tipo === 'interesse' && !updated[index].tempo) {
       updated[index].tempo = 60;
     }
-    // se for base, remover tempo
     if (tipo === 'base') {
       delete updated[index].tempo;
     }
@@ -85,8 +81,6 @@ export function RoteiroForm({ onSubmit }: Props) {
       const updated = [...prev];
       updated.splice(updated.length - 1, 0, {
         uid: generateUid(),
-        label: '',
-        coordinates: [],
         tipo: 'interesse',
         tempo: 60,
       });
@@ -149,7 +143,9 @@ export function RoteiroForm({ onSubmit }: Props) {
               <div className="flex items-center gap-2">
                 <PluginMapInput
                   id={`point-${ponto.uid}`}
-                  selectedValue={ponto}
+                  selectedValue={
+                    ponto.coordinates?.length ? ponto : undefined
+                  }
                   onSelectValue={(val: PointResult) => updatePoint(index, val)}
                   onUnselectValue={() => removePonto(index)}
                 />
@@ -200,7 +196,7 @@ export function RoteiroForm({ onSubmit }: Props) {
         </button>
       </div>
 
-      <button type="submit" className="bg-blue-500 text-black rounded p-2 mt-4">
+      <button type="submit" className="bg-blue-500 text-white rounded p-2 mt-4">
         Gerar Roteiro
       </button>
     </form>

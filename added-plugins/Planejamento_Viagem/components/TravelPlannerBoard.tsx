@@ -7,10 +7,11 @@ interface DiaRoteiro {
 
 interface PontoRoteiro {
   id: string;
-  nome: string;
+  label: string;
   tipo: 'base' | 'interesse';
   tempo?: number;
   fixo?: boolean;
+  coordinates: [number, number];
 }
 
 interface TravelPlannerBoardProps {
@@ -31,10 +32,7 @@ export function TravelPlannerBoard({
     origem?: { diaIndex: number; pontoIndex: number };
   } | null>(null);
 
-  function handleDragStart(
-    ponto: PontoRoteiro,
-    origem?: { diaIndex: number; pontoIndex: number }
-  ) {
+  function handleDragStart(ponto: PontoRoteiro, origem?: { diaIndex: number; pontoIndex: number }) {
     if (ponto.fixo) return;
     setDragItem({ ponto, origem });
   }
@@ -49,21 +47,44 @@ export function TravelPlannerBoard({
       if (!origemDia.pontos[dragItem.origem.pontoIndex]?.fixo) {
         origemDia.pontos.splice(dragItem.origem.pontoIndex, 1);
       }
-    } else {
-      const novos = pontosDisponiveis.filter((p) => p.id !== dragItem.ponto.id);
-      onUpdateDisponiveis?.(novos);
     }
 
     const destinoDia = updatedRoteiro[diaIndex];
-    if (insertIndex !== undefined) {
-      destinoDia.pontos.splice(insertIndex, 0, dragItem.ponto);
-    } else {
-      destinoDia.pontos.push(dragItem.ponto);
+
+    if (destinoDia.pontos.find(p => p.id === dragItem.ponto.id)) return;
+
+    const ultimaPos = destinoDia.pontos.findLastIndex(p => p.tipo === 'base');
+    let indexInsercao = insertIndex ?? ultimaPos;
+
+    // Se for ponto de interesse e houver base no fim, insere antes da última base
+    if (
+      dragItem.ponto.tipo === 'interesse' &&
+      ultimaPos >= 0 &&
+      ultimaPos === destinoDia.pontos.length - 1
+    ) {
+      indexInsercao = ultimaPos;
+    } else if (insertIndex === undefined) {
+      indexInsercao = destinoDia.pontos.length;
     }
 
-    const sincronizado = sincronizarBasesEntreDias(updatedRoteiro);
-    onUpdateRoteiro(sincronizado);
+    destinoDia.pontos.splice(indexInsercao, 0, dragItem.ponto);
+
+    onUpdateRoteiro(sincronizarBasesEntreDias(updatedRoteiro));
     setDragItem(null);
+  }
+
+  function handleRemove(diaIndex: number, pontoIndex: number) {
+    const ponto = roteiro[diaIndex].pontos[pontoIndex];
+    if (ponto.fixo) return;
+
+    const updatedRoteiro = [...roteiro.map(d => ({ ...d, pontos: [...d.pontos] }))];
+    updatedRoteiro[diaIndex].pontos.splice(pontoIndex, 1);
+
+    if (ponto.tipo === 'interesse') {
+      onUpdateDisponiveis?.([...pontosDisponiveis, ponto]);
+    }
+
+    onUpdateRoteiro(sincronizarBasesEntreDias(updatedRoteiro));
   }
 
   function sincronizarBasesEntreDias(roteiro: DiaRoteiro[]): DiaRoteiro[] {
@@ -81,13 +102,8 @@ export function TravelPlannerBoard({
 
       const primeiro = diaSeguinte.pontos[0];
 
-      if (primeiro?.fixo && primeiro.nome === ultimaBase.nome) {
-        continue;
-      }
-
-      if (primeiro?.fixo) {
-        diaSeguinte.pontos.shift();
-      }
+      if (primeiro?.fixo && primeiro.id === `${ultimaBase.id}-replica-dia${i + 1}`) continue;
+      if (primeiro?.fixo) diaSeguinte.pontos.shift();
 
       diaSeguinte.pontos.unshift({
         ...ultimaBase,
@@ -102,20 +118,22 @@ export function TravelPlannerBoard({
   return (
     <div className="flex gap-4 overflow-x-auto mt-6">
       <div className="min-w-[200px]">
-        <h4 className="font-bold mb-2">Pontos Disponíveis</h4>
+        <h4 className="font-bold mb-2">Bases Disponíveis</h4>
         {pontosDisponiveis.length === 0 && (
-          <div className="text-xs italic text-gray-400">Todos os pontos estão alocados</div>
+          <div className="text-xs italic text-gray-400">Nenhuma base disponível</div>
         )}
-        {pontosDisponiveis.map((ponto) => (
-          <div
-            key={ponto.id}
-            className="p-2 border rounded mb-2 bg-white cursor-move text-sm"
-            draggable
-            onDragStart={() => handleDragStart(ponto)}
-          >
-            {ponto.nome}
-          </div>
-        ))}
+        {pontosDisponiveis
+          .filter(p => p.tipo === 'base')
+          .map((ponto) => (
+            <div
+              key={ponto.id}
+              className="p-2 border rounded mb-2 bg-white cursor-move text-sm"
+              draggable
+              onDragStart={() => handleDragStart(ponto)}
+            >
+              {ponto.label}
+            </div>
+          ))}
       </div>
 
       {roteiro.map((dia, diaIndex) => (
@@ -125,9 +143,12 @@ export function TravelPlannerBoard({
           {dia.pontos.map((ponto, pontoIndex) => (
             <div
               key={ponto.id}
-              className={`p-2 border rounded mb-2 text-sm ${
-                ponto.fixo ? 'bg-gray-300 cursor-not-allowed' :
-                ponto.tipo === 'base' ? 'bg-yellow-100 cursor-move' : 'bg-blue-100 cursor-move'
+              className={`relative p-2 border rounded mb-2 text-sm ${
+                ponto.fixo
+                  ? 'bg-gray-300 cursor-not-allowed'
+                  : ponto.tipo === 'base'
+                  ? 'bg-yellow-100 cursor-move'
+                  : 'bg-blue-100 cursor-move'
               }`}
               draggable={!ponto.fixo}
               onDragStart={() =>
@@ -137,9 +158,18 @@ export function TravelPlannerBoard({
               onDrop={() => handleDrop(diaIndex, pontoIndex)}
               title={ponto.fixo ? 'Ponto fixo de base (não editável)' : ''}
             >
-              <strong>{ponto.nome}</strong>
+              <strong>{ponto.label}</strong>
               {ponto.tipo === 'interesse' && ponto.tempo && (
                 <div className="text-xs text-gray-600">{ponto.tempo} min</div>
+              )}
+              {!ponto.fixo && (
+                <button
+                  onClick={() => handleRemove(diaIndex, pontoIndex)}
+                  className="absolute top-1 right-1 text-xs text-red-500"
+                  title="Remover ponto"
+                >
+                  ✕
+                </button>
               )}
             </div>
           ))}
