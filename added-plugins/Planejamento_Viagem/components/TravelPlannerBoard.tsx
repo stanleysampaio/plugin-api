@@ -1,21 +1,23 @@
+/** @jsx _R.createElement */
+/** @jsxFrag _R.Fragment */
+/** @jsxRuntime classic */
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-// Pega dependências já SERVIDAS pelo TerraPlanner
-const PD: any = (window as any).PluginDependencies || {};
-const R: typeof import('react') = PD.React;
-const h = R.createElement;
+// React via PluginDependencies (sem imports)
+const _PD: any = (window as any).PluginDependencies || {};
+const _R: typeof import('react') = _PD.React;
 
-// ---------------------- Tipos ----------------------
+/* ---------------------- Tipos ---------------------- */
 type DiaRoteiro = { data: string; pontos: PontoRoteiro[] };
 
 type PontoRoteiro = {
   id: string;
   label: string;
   tipo: 'base' | 'interesse';
-  tempo?: number;                 // duração em minutos (POI)
-  fixo?: boolean;                 // âncoras base do dia
-  coordinates: [number, number];
-  inicioMin?: number;             // minutos desde 00:00 (ex.: 9h => 540)
+  tempo?: number;                 // duração informativa (min)
+  coordinates: [number, number];  // [lon, lat]
+  inicioMin?: number;             // min desde 00:00 (aplicado aos visíveis na grade)
 };
 
 type Props = {
@@ -28,18 +30,17 @@ type Props = {
   heightPx?: number;
 };
 
-// ---------------------- Constantes de agenda ----------------------
+/* ---------------------- Constantes / Horário ---------------------- */
 const DAY_START_MIN = 8 * 60;      // 08:00
-const DAY_END_MIN   = 19 * 60;     // 19:00 (fim do dia)
-const SLOT_MIN      = 30;          // 30 min por slot
-const SLOT_PX       = 28;          // altura visual do slot
-const COL_W_PX      = 280;         // largura de cada dia
-const END_SLOT_START = DAY_END_MIN - SLOT_MIN; // 18:30
+const DAY_END_MIN   = 19 * 60;     // 19:00
+const SLOT_MIN      = 30;
+const SLOT_PX       = 28;
+const COL_W_PX      = 300;
 
 const NUM_ROWS = (DAY_END_MIN - DAY_START_MIN) / SLOT_MIN;
 const CELL_STARTS: number[] = Array.from({ length: NUM_ROWS }, (_, i) => DAY_START_MIN + i * SLOT_MIN);
 
-// ---------------------- Utils ----------------------
+/* ---------------------- Utils ---------------------- */
 const pad2 = (n: number) => String(n).padStart(2, '0');
 const minutesToLabel = (m: number) => `${pad2(Math.floor(m/60))}:${pad2(m%60)}`;
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
@@ -47,34 +48,26 @@ const snapToSlot = (min: number) => {
   const c = clamp(min, DAY_START_MIN, DAY_END_MIN - SLOT_MIN);
   return DAY_START_MIN + Math.floor((c - DAY_START_MIN) / SLOT_MIN) * SLOT_MIN;
 };
-
-function dedupeById<T extends { id: string }>(arr: T[]): T[] {
-  const map = new Map<string, T>();
-  for (const it of arr) if (!map.has(it.id)) map.set(it.id, it);
-  return Array.from(map.values());
-}
-
-function byHorario(a: PontoRoteiro, b: PontoRoteiro) {
-  const ai = typeof a.inicioMin === 'number' ? a.inicioMin : Number.MAX_SAFE_INTEGER;
-  const bi = typeof b.inicioMin === 'number' ? b.inicioMin : Number.MAX_SAFE_INTEGER;
-  if (ai !== bi) return ai - bi;
-  if (a.tipo !== b.tipo) return a.tipo === 'base' ? -1 : 1;
-  return String(a.label).localeCompare(String(b.label));
-}
+const byTime = (a: PontoRoteiro, b: PontoRoteiro) =>
+  (a.inicioMin ?? Number.MAX_SAFE_INTEGER) - (b.inicioMin ?? Number.MAX_SAFE_INTEGER);
 
 function cloneRoteiro(r: DiaRoteiro[]): DiaRoteiro[] {
   return r.map(d => ({ ...d, pontos: [...d.pontos] }));
 }
 
-function boardSignature(days: DiaRoteiro[]): string {
-  return days.map(d => {
-    const ids = d.pontos
-      .map(p => `${p.id}@${typeof p.inicioMin === 'number' ? p.inicioMin : 'x'}`)
-      .join(',');
-    return `${d.data}:${ids}`;
-  }).join('|');
+function dedupeById<T extends { id: string }>(arr: T[]): T[] {
+  const m = new Map<string, T>();
+  for (const it of arr) if (!m.has(it.id)) m.set(it.id, it);
+  return [...m.values()];
 }
 
+function nextDateStr(yyyy_mm_dd: string): string {
+  const d = new Date(yyyy_mm_dd + 'T00:00:00');
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/* --------- Base “marcador invisível” por dia --------- */
 const baseMarkerIdForDay = (dateStr: string) => `__base_of_${dateStr}`;
 
 function getBaseMarker(dia: DiaRoteiro): PontoRoteiro | null {
@@ -84,89 +77,214 @@ function getBaseMarker(dia: DiaRoteiro): PontoRoteiro | null {
 
 function setBaseMarker(dia: DiaRoteiro, base: PontoRoteiro): DiaRoteiro {
   const id = baseMarkerIdForDay(dia.data);
-  const others = dia.pontos.filter(p => p.id !== id);
+  const keep = dia.pontos.filter(p => p.id !== id);
   return {
     ...dia,
-    pontos: [
-      ...others,
-      { id, label: base.label, tipo: 'base', fixo: false, coordinates: base.coordinates } // sem inicioMin => invisível
-    ]
+    pontos: [...keep, { id, label: base.label, tipo: 'base', coordinates: base.coordinates }],
   };
 }
 
-// Âncoras visuais 08:00 e 18:30 (início/fim)
-function ensureAnchorsForDay(dia: DiaRoteiro): DiaRoteiro {
-  const marker = getBaseMarker(dia);
-  if (!marker) {
-    // sem base definida ainda => mantém só POIs
-    return { ...dia, pontos: dia.pontos.filter(p => p.tipo === 'interesse') };
+/* --------- Base efetiva por dia e base final do roteiro --------- */
+function baseForDay(days: DiaRoteiro[], idx: number, baseCatalog?: PontoRoteiro[]): PontoRoteiro | null {
+  const marker = getBaseMarker(days[idx]);
+  if (marker) return marker;
+
+  // herda do dia anterior
+  for (let i = idx - 1; i >= 0; i--) {
+    const prev = getBaseMarker(days[i]);
+    if (prev) return prev;
   }
-  const anchors: PontoRoteiro[] = [
-    { id: `base-inicio-${dia.data}`, label: marker.label, tipo: 'base', fixo: true, coordinates: marker.coordinates, inicioMin: DAY_START_MIN },
-    { id: `base-fim-${dia.data}`,    label: marker.label, tipo: 'base', fixo: true, coordinates: marker.coordinates, inicioMin: END_SLOT_START },
-  ];
-  const keep = dia.pontos.filter(p => p.tipo === 'interesse' || p.id === baseMarkerIdForDay(dia.data));
-  return { ...dia, pontos: dedupeById([...anchors, ...keep]) };
+
+  const first = baseCatalog?.[0] ?? null;
+  return first
+    ? { id: baseMarkerIdForDay(days[idx].data), label: first.label, tipo: 'base', coordinates: first.coordinates }
+    : null;
 }
 
-// Distribui POIs entre as âncoras sem sobrepor e respeitando durações
-function distributePoisBetweenAnchors(dia: DiaRoteiro): DiaRoteiro {
-  const hasStart = dia.pontos.some(p => p.tipo === 'base' && p.fixo && p.inicioMin === DAY_START_MIN);
-  const hasEnd   = dia.pontos.some(p => p.tipo === 'base' && p.fixo && p.inicioMin === END_SLOT_START);
-
-  const pois = dia.pontos.filter(p => p.tipo === 'interesse');
-  const fixed = dia.pontos.filter(p => p.tipo === 'base' && p.fixo);
-
-  if (!hasStart || !hasEnd) {
-    return { ...dia, pontos: [...fixed, ...pois] };
-  }
-
-  const occupied = new Set<number>([DAY_START_MIN, END_SLOT_START]);
-  const placed: PontoRoteiro[] = [];
-  let cursor = DAY_START_MIN + SLOT_MIN;
-
-  for (const poi of pois) {
-    const dur = Math.max(SLOT_MIN, poi.tempo || SLOT_MIN);
-    let placedOne = false;
-
-    while (cursor + dur <= DAY_END_MIN) {
-      const start = snapToSlot(cursor);
-      let ok = (start + dur) <= END_SLOT_START;
-      for (let t = start; ok && t < start + dur; t += SLOT_MIN) {
-        if (occupied.has(t)) ok = false;
-      }
-      if (ok) {
-        const item = { ...poi, inicioMin: start };
-        placed.push(item);
-        for (let t = start; t < start + dur; t += SLOT_MIN) occupied.add(t);
-        cursor = start + dur;
-        placedOne = true;
-        break;
-      }
-      cursor += SLOT_MIN;
-      if (cursor > END_SLOT_START) break;
-    }
-
-    if (!placedOne) {
-      // fallback tenta colar antes da âncora final
-      const start = Math.max(DAY_START_MIN + SLOT_MIN, END_SLOT_START - (poi.tempo || SLOT_MIN));
-      const s = snapToSlot(start);
-      if (s >= DAY_START_MIN + SLOT_MIN && s <= END_SLOT_START - SLOT_MIN) {
-        placed.push({ ...poi, inicioMin: s });
-      }
-    }
-  }
-
-  const marker = getBaseMarker(dia)!;
-  const anchors: PontoRoteiro[] = [
-    { id: `base-inicio-${dia.data}`, label: marker.label, tipo: 'base', fixo: true, coordinates: marker.coordinates, inicioMin: DAY_START_MIN },
-    { id: `base-fim-${dia.data}`,    label: marker.label, tipo: 'base', fixo: true, coordinates: marker.coordinates, inicioMin: END_SLOT_START },
-  ];
-  const final = dedupeById([...anchors, ...placed, marker]).sort(byHorario);
-  return { ...dia, pontos: final };
+function finalCatalogBase(baseCatalog?: PontoRoteiro[]): PontoRoteiro | null {
+  if (!baseCatalog?.length) return null;
+  const last = baseCatalog[baseCatalog.length - 1];
+  return last
+    ? { id: `__final_catalog_base`, label: last.label, tipo: 'base', coordinates: last.coordinates }
+    : null;
 }
 
-// ---------------------- Componente ----------------------
+/* --------- Atribui horários para POIs sem inicioMin --------- */
+function autoAssignTimes(day: DiaRoteiro): DiaRoteiro {
+  const marker = getBaseMarker(day);
+  const fixedStart = { id: `base-start-${day.data}`, label: marker?.label ?? 'Base', tipo: 'base' as const, coordinates: (marker?.coordinates ?? [0,0]) as [number,number], inicioMin: DAY_START_MIN };
+  const fixedEnd   = { id: `base-end-${day.data}`,   label: marker?.label ?? 'Base', tipo: 'base' as const, coordinates: (marker?.coordinates ?? [0,0]) as [number,number], inicioMin: DAY_END_MIN - SLOT_MIN };
+
+  const pois = day.pontos.filter(p => p.tipo === 'interesse');
+  let t = DAY_START_MIN + SLOT_MIN; // começa 08:30 por padrão
+  const assigned = pois.map(p => {
+    const dur = Math.max(SLOT_MIN, p.tempo || SLOT_MIN);
+    const out = { ...p, inicioMin: typeof p.inicioMin === 'number' ? snapToSlot(p.inicioMin!) : snapToSlot(t) };
+    t = snapToSlot(out.inicioMin! + dur);
+    return out;
+  });
+
+  // remove versões antigas de base-start/end
+  const rest = day.pontos.filter(p => !(p.id === fixedStart.id || p.id === fixedEnd.id));
+
+  return {
+    ...day,
+    pontos: dedupeById([...(marker ? [marker] : []), fixedStart, fixedEnd, ...assigned, ...rest]).sort(byTime),
+  };
+}
+
+/* --------- Normalização completa: começo/fim e destino final --------- */
+function normalizeDays(src: DiaRoteiro[], baseCatalog?: PontoRoteiro[]): DiaRoteiro[] {
+  const days = cloneRoteiro(src);
+
+  for (let i = 0; i < days.length; i++) {
+    const bf = baseForDay(days, i, baseCatalog);
+    if (bf) days[i] = setBaseMarker(days[i], bf);
+    days[i] = autoAssignTimes(days[i]);
+  }
+
+  // Ajusta a "base-end" para refletir a base do dia seguinte (regra do dormir)
+  for (let i = 0; i < days.length; i++) {
+    const endId = `base-end-${days[i].data}`;
+    const nextBase = (i < days.length - 1 ? getBaseMarker(days[i + 1]) : finalCatalogBase(baseCatalog)) ?? getBaseMarker(days[i]);
+    if (nextBase) {
+      const replaced = days[i].pontos.map(p =>
+        p.id === endId ? { ...p, label: nextBase.label, coordinates: nextBase.coordinates } : p
+      );
+      days[i].pontos = replaced.sort(byTime);
+    }
+  }
+
+  // último dia termina na última base do catálogo (destino final), se existir
+  const last = days.length - 1;
+  if (last >= 0) {
+    const endId = `base-end-${days[last].data}`;
+    const dest = finalCatalogBase(baseCatalog) ?? getBaseMarker(days[last]);
+    if (dest) {
+      days[last].pontos = days[last].pontos.map(p =>
+        p.id === endId ? { ...p, label: dest.label, coordinates: dest.coordinates } : p
+      ).sort(byTime);
+    }
+  }
+
+  return days;
+}
+
+/* --------- Split do dia ao inserir base no meio --------- */
+function splitDayAt(
+  src: DiaRoteiro[],
+  diaIndex: number,
+  slotMin: number,
+  newBase: PontoRoteiro,
+  baseCatalog?: PontoRoteiro[]
+): DiaRoteiro[] {
+  const days = normalizeDays(src, baseCatalog);
+  const day = days[diaIndex];
+  const cut = snapToSlot(slotMin);
+
+  // itens depois do corte vão para o próximo dia
+  const toStay: PontoRoteiro[] = [];
+  const toMove: PontoRoteiro[] = [];
+
+  for (const p of day.pontos) {
+    if (p.id.startsWith('__base_of_')) continue; // marcador invisível
+    if (p.id === `base-start-${day.data}`) { toStay.push(p); continue; }
+
+    if (typeof p.inicioMin === 'number' && p.inicioMin > cut) toMove.push(p);
+    else toStay.push(p);
+  }
+
+  // ajusta o término do dia atual para a base nova no horário escolhido
+  const baseEnd = { id: `base-end-${day.data}`, label: newBase.label, tipo: 'base' as const, coordinates: newBase.coordinates, inicioMin: cut };
+  const markerStay = setBaseMarker({ ...day, pontos: toStay }, getBaseMarker(day) ?? newBase);
+  markerStay.pontos = dedupeById([
+    ...(getBaseMarker(markerStay) ? [getBaseMarker(markerStay)!] : []),
+    ...toStay.filter(p => p.id !== `base-end-${day.data}` && p.id !== `base-start-${day.data}`),
+    { id: `base-start-${day.data}`, label: (getBaseMarker(markerStay)?.label ?? newBase.label), tipo: 'base', coordinates: (getBaseMarker(markerStay)?.coordinates ?? newBase.coordinates), inicioMin: DAY_START_MIN },
+    baseEnd,
+  ]).sort(byTime);
+
+  // garante próximo dia
+  const nextIdx = diaIndex + 1;
+  if (!days[nextIdx]) {
+    days.push({ data: nextDateStr(day.data), pontos: [] });
+  }
+  const nextDay = days[nextIdx];
+
+  // próximo dia começa nessa base nova
+  const markerNext = setBaseMarker({ ...nextDay, pontos: nextDay.pontos.filter(p => !p.id.startsWith('__base_of_')) }, newBase);
+  // realoca itens: reatribui horários no próximo dia
+  let t = DAY_START_MIN + SLOT_MIN;
+  const reassigned = toMove
+    .filter(p => p.tipo === 'interesse')
+    .map(p => {
+      const dur = Math.max(SLOT_MIN, p.tempo || SLOT_MIN);
+      const out = { ...p, inicioMin: snapToSlot(t) };
+      t = snapToSlot(out.inicioMin! + dur);
+      return out;
+    });
+
+  const nextBuilt: DiaRoteiro = {
+    ...markerNext,
+    pontos: dedupeById([
+      getBaseMarker(markerNext)!,
+      { id: `base-start-${markerNext.data}`, label: newBase.label, tipo: 'base', coordinates: newBase.coordinates, inicioMin: DAY_START_MIN },
+      { id: `base-end-${markerNext.data}`,   label: (finalCatalogBase(baseCatalog ?? [])?.label ?? newBase.label), tipo: 'base', coordinates: (finalCatalogBase(baseCatalog ?? [])?.coordinates ?? newBase.coordinates), inicioMin: DAY_END_MIN - SLOT_MIN },
+      ...reassigned,
+      ...nextDay.pontos.filter(p => p.tipo === 'interesse'), // preserva existentes
+    ]).sort(byTime),
+  };
+
+  const out = cloneRoteiro(days);
+  out[diaIndex] = markerStay;
+  out[nextIdx] = nextBuilt;
+
+  return normalizeDays(out, baseCatalog);
+}
+
+/* --------- Monta vetor de viagens por dia + notifica mapa --------- */
+const DAY_COLORS = ['#2563EB', '#059669', '#F59E0B', '#EF4444', '#7C3AED', '#0EA5E9', '#16A34A', '#EA580C'];
+
+function orderedDaysForRouting(days: DiaRoteiro[]): DiaRoteiro[] {
+  return days.map(d => {
+    const start = d.pontos.find(p => p.id === `base-start-${d.data}`);
+    const end   = d.pontos.find(p => p.id === `base-end-${d.data}`);
+    const pois  = d.pontos.filter(p => p.tipo === 'interesse').sort(byTime);
+    const seq   = ([] as PontoRoteiro[]).concat(start ? [start] : [], pois, end ? [end] : []);
+    return { ...d, pontos: seq };
+  });
+}
+
+function logTripsAndNotify(days: DiaRoteiro[], onRebuildRoutes?: (novo: DiaRoteiro[]) => void) {
+  const ordered = orderedDaysForRouting(days);
+
+  const viagens = ordered.map((d, i) => {
+    const legs: Array<{ from: string; to: string; a: [number,number]; b: [number,number] }> = [];
+    for (let k = 0; k < d.pontos.length - 1; k++) {
+      const a = d.pontos[k];
+      const b = d.pontos[k + 1];
+      legs.push({
+        from: a.label,
+        to: b.label,
+        a: a.coordinates,
+        b: b.coordinates,
+      });
+    }
+    return { day: d.data, color: DAY_COLORS[i % DAY_COLORS.length], legs };
+  });
+
+  // Expor cores por dia e viagens (pra usar no recomputeRoutes)
+  (window as any).TT_DAY_COLORS = Object.fromEntries(viagens.map(v => [v.day, v.color]));
+  (window as any).TT_VIAGENS = viagens;
+
+  // debug pra você ver as viagens por dia (com cor)
+  // eslint-disable-next-line no-console
+  console.log('TT::viagens', viagens);
+
+  onRebuildRoutes?.(ordered);
+}
+
+/* ---------------------- Componente ---------------------- */
 export function TravelPlannerBoard({
   roteiro,
   pontosDisponiveis,
@@ -176,168 +294,153 @@ export function TravelPlannerBoard({
   onRebuildRoutes,
   heightPx = 560,
 }: Props) {
-  if (!R) return null;
+  if (!_R) return null;
 
-  const [dragItem, setDragItem] = R.useState<{
-    ponto: PontoRoteiro;
+  const [dragItem, setDragItem] = _R.useState<{
+    tipo: 'base' | 'interesse' | 'base-end';
+    ponto?: PontoRoteiro;
     origem?: { diaIndex: number; pontoIndex: number };
     fromSidebar?: boolean;
   } | null>(null);
 
-  // herda base do dia anterior ou usa a primeira do catálogo
-  const withBaseMarkers = R.useMemo(() => {
-    const out = roteiro.map(d => ({ ...d, pontos: [...d.pontos] }));
-    let lastBase: PontoRoteiro | null = null;
+  // Normaliza sempre que props mudam
+  const dias = _R.useMemo(() => normalizeDays(roteiro, baseCatalog), [roteiro, baseCatalog]);
 
-    for (let i = 0; i < out.length; i++) {
-      const d = out[i];
-      let marker = getBaseMarker(d);
-      if (!marker) {
-        if (lastBase) out[i] = setBaseMarker(d, lastBase);
-        else if (baseCatalog && baseCatalog.length) out[i] = setBaseMarker(d, baseCatalog[0]);
-      }
-      const m = getBaseMarker(out[i]);
-      if (m) lastBase = m;
-    }
-    return out;
-  }, [roteiro, baseCatalog]);
+  // Notifica mapa no primeiro render
+  _R.useEffect(() => {
+    logTripsAndNotify(dias, onRebuildRoutes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // mount
 
-  const withAnchors = R.useMemo(
-    () => withBaseMarkers.map(ensureAnchorsForDay),
-    [withBaseMarkers]
-  );
-
-  const dias = R.useMemo(
-    () => withAnchors.map(distributePoisBetweenAnchors),
-    [withAnchors]
-  );
-
-  function processPipeline(src: DiaRoteiro[], catalog?: PontoRoteiro[]) {
-    const out = src.map(d => ({ ...d, pontos: [...d.pontos] }));
-    let last: PontoRoteiro | null = null;
-    for (let i = 0; i < out.length; i++) {
-      let m = getBaseMarker(out[i]);
-      if (!m) {
-        if (last) out[i] = setBaseMarker(out[i], last);
-        else if (catalog && catalog.length) out[i] = setBaseMarker(out[i], catalog[0]);
-      }
-      m = getBaseMarker(out[i]);
-      if (m) last = m;
-    }
-    const withA = out.map(ensureAnchorsForDay);
-    const dist = withA.map(distributePoisBetweenAnchors);
-    return dist.map(d => ({ ...d, pontos: dedupeById(d.pontos) }));
-  }
-
-  function safePropagate(nextDays: DiaRoteiro[]) {
-    const nextSig = boardSignature(nextDays);
-    const currSig = boardSignature(roteiro);
-    if (nextSig !== currSig) {
-      onUpdateRoteiro(nextDays);
-      onRebuildRoutes?.(nextDays);
-    }
+  function propagate(next: DiaRoteiro[]) {
+    const norm = normalizeDays(next, baseCatalog);
+    onUpdateRoteiro(norm);
+    logTripsAndNotify(norm, onRebuildRoutes);
     setDragItem(null);
   }
 
-  function handleDragStart(
-    ponto: PontoRoteiro,
-    origem?: { diaIndex: number; pontoIndex: number },
-    fromSidebar = false
-  ) {
-    if (ponto.fixo) return;
-    setDragItem({ ponto, origem, fromSidebar });
+  /* ---------- Drag helpers ---------- */
+  function startDragFromSidebar(p: PontoRoteiro) {
+    setDragItem({ tipo: p.tipo, ponto: p, fromSidebar: true });
   }
 
-  function handleRemove(diaIndex: number, pontoIndex: number) {
-    const p = roteiro[diaIndex]?.pontos[pontoIndex];
-    if (!p || p.fixo) return;
+  function startDragCard(diaIndex: number, pontoIndex: number, p: PontoRoteiro) {
+    // Transformo base-start em "fonte de base" para permitir split posterior
+    if (p.id === `base-start-${dias[diaIndex].data}`) {
+      const asBase: PontoRoteiro = { id: `__drag_base_${dias[diaIndex].data}`, label: p.label, tipo: 'base', coordinates: p.coordinates };
+      setDragItem({ tipo: 'base', ponto: asBase, origem: { diaIndex, pontoIndex } });
+      return;
+    }
+    if (p.id === `base-end-${dias[diaIndex].data}`) {
+      setDragItem({ tipo: 'base-end', origem: { diaIndex, pontoIndex } });
+      return;
+    }
+    setDragItem({ tipo: p.tipo, ponto: p, origem: { diaIndex, pontoIndex } });
+  }
+
+  function dropOnHeader(diaIndex: number) {
+    if (!dragItem || dragItem.tipo !== 'base' || !dragItem.ponto) return;
+    const updated = cloneRoteiro(roteiro);
+    updated[diaIndex] = setBaseMarker(updated[diaIndex] ?? dias[diaIndex], dragItem.ponto);
+    propagate(updated);
+  }
+
+  function dropOnSlot(diaIndex: number, min: number) {
+    if (!dragItem) return;
 
     const updated = cloneRoteiro(roteiro);
-    updated[diaIndex].pontos.splice(pontoIndex, 1);
 
-    if (p.tipo === 'interesse' && onUpdateDisponiveis) {
-      const still = updated.some(d => d.pontos.some(pp => pp.id === p.id));
-      if (!still) onUpdateDisponiveis(dedupeById([...pontosDisponiveis, { ...p }]));
+    // Arrasto do card de término → reposiciona o "sono"
+    if (dragItem.tipo === 'base-end') {
+      // usa a base de término atual como "nova base" no split
+      const baseEnd = dias[diaIndex].pontos.find(p => p.id === `base-end-${dias[diaIndex].data}`);
+      const endBase = baseEnd ? { ...baseEnd, tipo: 'base' as const } : (getBaseMarker(dias[diaIndex]) ?? undefined);
+      if (!endBase) return;
+      const splitted = splitDayAt(updated, diaIndex, min, endBase, baseCatalog);
+      propagate(splitted);
+      return;
     }
 
-    const staged = processPipeline(updated, baseCatalog);
-    safePropagate(staged);
-  }
+    // Base (da sidebar OU do "início" arrastado) → split
+    if (dragItem.tipo === 'base' && dragItem.ponto) {
+      const splitted = splitDayAt(updated, diaIndex, min, dragItem.ponto, baseCatalog);
+      propagate(splitted);
+      return;
+    }
 
-  // drop em um slot: se for base => define base do dia; se for POI => agenda no slot
-  function handleDropToSlot(diaIndex: number, slotMin: number) {
-    if (!dragItem) return;
-    const updated = cloneRoteiro(roteiro);
+    // Mover POI (de dia → outro dia / outro horário)
+    if (dragItem.tipo === 'interesse') {
+      const sMin = snapToSlot(min);
 
-    if (dragItem.ponto.tipo === 'base') {
-      updated[diaIndex] = setBaseMarker(updated[diaIndex], dragItem.ponto);
-
+      // remove da origem (se existir)
       if (dragItem.origem) {
         const { diaIndex: oDia, pontoIndex: oIdx } = dragItem.origem;
-        const src = updated[oDia]?.pontos[oIdx];
-        if (src && !src.fixo) updated[oDia].pontos.splice(oIdx, 1);
+        const src = updated[oDia] ?? dias[oDia];
+        const srcCopy = { ...src, pontos: [...src.pontos] };
+        const gone = srcCopy.pontos[oIdx];
+        if (gone) srcCopy.pontos.splice(oIdx, 1);
+        updated[oDia] = srcCopy;
       }
 
-      const staged = processPipeline(updated, baseCatalog);
-      safePropagate(staged);
-      return;
+      // adiciona no destino
+      const to = updated[diaIndex] ?? dias[diaIndex];
+      const poi = { ...(dragItem.ponto ?? dias[dragItem.origem!.diaIndex].pontos[dragItem.origem!.pontoIndex]), inicioMin: sMin };
+      const toCopy = { ...to, pontos: [...to.pontos.filter(p => p.tipo !== 'interesse' || p.id !== poi.id), poi] };
+      updated[diaIndex] = toCopy;
+
+      // se veio da sidebar, retira dos disponíveis
+      if (dragItem.fromSidebar && onUpdateDisponiveis) {
+        onUpdateDisponiveis(pontosDisponiveis.filter(x => x.id !== poi.id));
+      }
+
+      propagate(updated);
     }
-
-    // interesse
-    if (dragItem.origem) {
-      const { diaIndex: oDia, pontoIndex: oIdx } = dragItem.origem;
-      const src = updated[oDia]?.pontos[oIdx];
-      if (src && !src.fixo) updated[oDia].pontos.splice(oIdx, 1);
-    }
-
-    // sem duplicar interesse globalmente
-    if (updated.some(d => d.pontos.some(p => p.id === dragItem.ponto.id))) {
-      setDragItem(null);
-      return;
-    }
-
-    const destino = updated[diaIndex];
-    destino.pontos.push({ ...dragItem.ponto, inicioMin: snapToSlot(slotMin) });
-
-    if (dragItem.fromSidebar && dragItem.ponto.tipo === 'interesse' && onUpdateDisponiveis) {
-      onUpdateDisponiveis(pontosDisponiveis.filter(p => p.id !== dragItem.ponto.id));
-    }
-
-    const staged = processPipeline(updated, baseCatalog);
-    safePropagate(staged);
   }
 
-  // Sidebar: bases disponíveis (catálogo > fallback dos dias)
-  const basesDisponiveis: PontoRoteiro[] = R.useMemo(() => {
+  // Drop em qualquer área da coluna (mesmo coberta por cards)
+  function dropOnColumn(diaIndex: number, e: any) {
+    e.preventDefault();
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const y = e.clientY - rect.top;
+    const slotIdx = clamp(Math.floor(y / SLOT_PX), 0, NUM_ROWS - 1);
+    const min = DAY_START_MIN + slotIdx * SLOT_MIN;
+    dropOnSlot(diaIndex, min);
+  }
+
+  /* ---------- Sidebar ---------- */
+  const basesDisponiveis: PontoRoteiro[] = _R.useMemo(() => {
     const raw = (baseCatalog && baseCatalog.length)
       ? baseCatalog
-      : roteiro.flatMap(d => d.pontos.filter(p => p.tipo === 'base' && !p.fixo));
+      : roteiro.flatMap(d => d.pontos.filter(p => p.tipo === 'base'));
     return dedupeById(raw);
   }, [baseCatalog, roteiro]);
 
-  // Tema leve (uma vez)
-  R.useEffect(() => {
-    const id = 'tt-grid-theme-v5';
+  /* ---------- Estilos (cards bonitos) ---------- */
+  _R.useEffect(() => {
+    const id = 'tt-grid-theme-v7';
     if (document.getElementById(id)) return;
     const css = `
-      .tt-board .slot { border-bottom: 1px solid rgba(0,0,0,.06); }
-      .tt-board .slot:nth-child(odd) { background: rgba(0,0,0,.02); }
-      .tt-card {
-        border-radius: 10px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.08);
-        position: relative;
-        overflow: hidden;
-      }
-      .tt-card .bar { position:absolute; left:0; top:0; bottom:0; width:4px; opacity:.85; }
-      .tt-card.base { background:#ECFDF5; border:1px solid #A7F3D0; color:#065F46; }
-      .tt-card.base .bar { background:#10B981; }
-      .tt-card.poi  { background:#EFF6FF; border:1px solid #BFDBFE; color:#0B2545; }
-      .tt-card.poi  .bar { background:#3B82F6; }
-      .tt-card.fixo { opacity:.98; }
-      .tt-sticky { position: sticky; background:#fff; z-index: 2; }
-      .tt-title { font-weight:700; font-size:12px; line-height:1.2; }
-      .tt-meta { font-size:10px; opacity:.75; }
-      .tt-remove { position:absolute; right:4px; top:2px; font-size:10px; color:#DC2626; }
+    .tt-board .slot { border-bottom: 1px solid rgba(0,0,0,.06); }
+    .tt-board .slot:nth-child(odd) { background: rgba(0,0,0,.02); }
+    .tt-card {
+      border-radius: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+      position: relative;
+      overflow: hidden;
+      border: 1px solid transparent;
+    }
+    .tt-card .bar { position:absolute; left:0; top:0; bottom:0; width:6px; opacity:.9; }
+    .tt-card.base { background:#F0FDFA; border-color:#99F6E4; color:#064E3B; }
+    .tt-card.base .bar { background:#10B981; }
+    .tt-card.poi  { background:#EFF6FF; border-color:#BFDBFE; color:#0B2545; }
+    .tt-card.poi  .bar { background:#3B82F6; }
+    .tt-card .title { font-weight:700; font-size:12px; line-height:1.2; }
+    .tt-card .meta { font-size:11px; opacity:.8; }
+    .tt-card .close { position:absolute; right:6px; top:4px; font-size:12px; color:#DC2626; }
+    .tt-sticky { position: sticky; background:#fff; z-index: 2; }
+    .tt-day-head { font-weight:700; }
+    .tt-head-drop { border:1px dashed rgba(0,0,0,.2); border-radius:10px; padding:4px 8px; font-size:12px; color:#374151; }
+    .tt-head-drop.tt-hover { background:#ECFDF5; border-color:#10B981; color:#065F46; }
     `;
     const el = document.createElement('style');
     el.id = id;
@@ -347,200 +450,192 @@ export function TravelPlannerBoard({
 
   const minWidthPx = Math.max(1, dias.length) * COL_W_PX + 120;
 
-  // -------- Render --------
-  return h(
-    'div',
-    { className: 'flex gap-4' },
+  /* ---------------------- Render ---------------------- */
+  return (
+    <div className="flex gap-4">
+      {/* Sidebar */}
+      <aside className="min-w-[260px]">
+        <h4 className="font-bold mb-2">Bases</h4>
+        <div className="space-y-2">
+          {basesDisponiveis.map((p) => (
+            <div
+              key={'base-' + p.id}
+              className="px-2 py-1 border rounded text-sm bg-emerald-50 cursor-move"
+              draggable
+              onDragStart={() => startDragFromSidebar(p)}
+              title="Arraste para o cabeçalho (define início) ou para um horário (divide o dia)"
+            >
+              🏠 {p.label}
+            </div>
+          ))}
+        </div>
 
-    // Sidebar
-    h(
-      'aside',
-      { className: 'min-w-[260px]' },
-      h('h4', { className: 'font-bold mb-2' }, 'Bases'),
-      h(
-        'div',
-        { className: 'space-y-2' },
-        ...basesDisponiveis.map((p) =>
-          h(
-            'div',
-            {
-              key: 'base-' + p.id,
-              className: 'px-2 py-1 border rounded text-sm bg-emerald-50 cursor-move',
-              draggable: true,
-              onDragStart: () => handleDragStart(p, undefined, true),
-              title: 'Arraste para um dia para definir a base desse dia',
-            },
-            '🏠 ', p.label
-          )
-        )
-      ),
+        <h4 className="font-bold mt-4 mb-2">Pontos de interesse</h4>
+        <div className="space-y-2">
+          {pontosDisponiveis.map((p) => (
+            <div
+              key={p.id}
+              className="px-2 py-1 border rounded text-sm bg-blue-50 cursor-move"
+              draggable
+              onDragStart={() => startDragFromSidebar(p)}
+              title="Arraste para um horário do dia"
+            >
+              📍 {p.label}
+            </div>
+          ))}
+        </div>
+      </aside>
 
-      h('h4', { className: 'font-bold mt-4 mb-2' }, 'Pontos de interesse'),
-      h(
-        'div',
-        { className: 'space-y-2' },
-        ...pontosDisponiveis.map((p) =>
-          h(
-            'div',
-            {
-              key: p.id,
-              className: 'px-2 py-1 border rounded text-sm bg-blue-50 cursor-move',
-              draggable: true,
-              onDragStart: () => handleDragStart(p, undefined, true),
-              title: 'Arraste para um horário do dia',
-            },
-            '📍 ', p.label
-          )
-        )
-      )
-    ),
+      {/* Board */}
+      <section
+        className="flex-1 rounded border shadow-sm overflow-auto bg-white tt-board"
+        style={{ height: heightPx + 'px', minHeight: heightPx + 'px', minWidth: minWidthPx + 'px' }}
+      >
+        {/* Cabeçalho */}
+        <div
+          className="grid tt-sticky top-0"
+          style={{ gridTemplateColumns: `120px repeat(${dias.length}, ${COL_W_PX}px)` }}
+        >
+          <div className="h-12 border-b border-r flex items-center justify-center text-xs text-gray-500">
+            Horário
+          </div>
+          {dias.map((d, diaIndex) => (
+            <div
+              key={'head-' + d.data}
+              className="h-12 border-b border-r flex items-center justify-between px-3"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={() => dropOnHeader(diaIndex)}
+            >
+              <span className="tt-day-head">{d.data}</span>
+              <span className="tt-head-drop">Solte uma <b>base</b> aqui para definir o início</span>
+            </div>
+          ))}
+        </div>
 
-    // Board
-    h(
-      'section',
-      {
-        className: 'flex-1 rounded border shadow-sm overflow-auto bg-white tt-board',
-        style: { height: heightPx + 'px', minHeight: heightPx + 'px', minWidth: minWidthPx + 'px' },
-      },
+        {/* Grade + Colunas */}
+        <div
+          className="grid relative"
+          style={{ gridTemplateColumns: `120px repeat(${dias.length}, ${COL_W_PX}px)`, width: minWidthPx + 'px' }}
+        >
+          {/* Coluna de horários */}
+          <div className="tt-sticky left-0">
+            {CELL_STARTS.map((min) => (
+              <div
+                key={'lbl-' + min}
+                className="border-b border-r flex items-start justify-center text-sm font-medium"
+                style={{ height: SLOT_PX + 'px' }}
+              >
+                {minutesToLabel(min)}
+              </div>
+            ))}
+            <div className="border-r" style={{ height: '1px' }} />
+            <div className="border-r flex items-start justify-center text-xs text-gray-500 pb-2">19:00</div>
+          </div>
 
-      // Cabeçalho
-      h(
-        'div',
-        {
-          className: 'grid tt-sticky top-0',
-          style: { gridTemplateColumns: `120px repeat(${dias.length}, ${COL_W_PX}px)` },
-        },
-        h(
-          'div',
-          { className: 'h-12 border-b border-r flex items-center justify-center text-xs text-gray-500' },
-          'Horário'
-        ),
-        ...dias.map((d) =>
-          h(
-            'div',
-            {
-              key: 'head-' + d.data,
-              className: 'h-12 border-b border-r flex items-center justify-center font-semibold',
-            },
-            d.data
-          )
-        )
-      ),
+          {/* Colunas por dia */}
+          {dias.map((dia, diaIndex) => (
+            <div key={'col-' + dia.data} className="relative border-r">
+              <div
+                className="relative"
+                style={{ display: 'grid', gridTemplateRows: `repeat(${NUM_ROWS}, ${SLOT_PX}px)` }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => dropOnColumn(diaIndex, e)}
+              >
+                {/* Slots dropáveis (continua aceitando) */}
+                {CELL_STARTS.map((min) => (
+                  <div
+                    key={dia.data + '-slot-' + min}
+                    className="slot hover:bg-gray-100 transition-colors"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => dropOnSlot(diaIndex, min)}
+                    title={`Soltar em ${minutesToLabel(min)}`}
+                  />
+                ))}
 
-      // Grade de horários e colunas dos dias
-      h(
-        'div',
-        {
-          className: 'grid relative',
-          style: { gridTemplateColumns: `120px repeat(${dias.length}, ${COL_W_PX}px)`, width: minWidthPx + 'px' },
-        },
+                {/* Cards */}
+                {dia.pontos
+                  .filter(p => p.id !== baseMarkerIdForDay(dia.data)) // não renderiza marcador invisível
+                  .sort(byTime)
+                  .map((ponto, pontoIndex) => {
+                    const start = typeof ponto.inicioMin === 'number' ? snapToSlot(ponto.inicioMin) : null;
+                    const dur = ponto.tipo === 'interesse' ? Math.max(SLOT_MIN, ponto.tempo || SLOT_MIN) : SLOT_MIN;
+                    const end = start !== null ? Math.min(DAY_END_MIN, start + dur) : null;
+                    const span = start !== null ? Math.max(1, Math.ceil((end! - start) / SLOT_MIN)) : 1;
+                    const rowIndex = start !== null ? Math.round((start - DAY_START_MIN) / SLOT_MIN) + 1 : 1;
 
-        // Coluna de horários (sticky left)
-        h(
-          'div',
-          { className: 'tt-sticky left-0' },
-          ...CELL_STARTS.map((min) =>
-            h(
-              'div',
-              {
-                key: 'lbl-' + min,
-                className: 'border-b border-r flex items-start justify-center text-sm font-medium',
-                style: { height: SLOT_PX + 'px' },
-              },
-              minutesToLabel(min)
-            )
-          ),
-          h('div', { className: 'border-r', style: { height: '1px' } }),
-          h(
-            'div',
-            { className: 'border-r flex items-start justify-center text-xs text-gray-500 pb-2' },
-            '19:00'
-          )
-        ),
+                    const isBaseStart = ponto.id === `base-start-${dia.data}`;
+                    const isBaseEnd   = ponto.id === `base-end-${dia.data}`;
+                    const isBase      = ponto.tipo === 'base' || isBaseStart || isBaseEnd;
+                    const kind        = isBase ? 'base' : 'poi';
+                    // Agora: base-start também é arrastável (como “fonte de base”)
+                    const canDrag     = isBaseEnd || isBaseStart || (!isBase);
 
-        // Colunas por dia
-        ...dias.map((dia, diaIndex) =>
-          h(
-            'div',
-            { key: 'col-' + dia.data, className: 'relative border-r' },
-
-            h(
-              'div',
-              { className: 'relative', style: { display: 'grid', gridTemplateRows: `repeat(${NUM_ROWS}, ${SLOT_PX}px)` } },
-
-              // Slots dropáveis
-              ...CELL_STARTS.map((min) =>
-                h('div', {
-                  key: dia.data + '-slot-' + min,
-                  className: 'slot hover:bg-gray-100 transition-colors',
-                  onDragOver: (e: DragEvent) => e.preventDefault(),
-                  // @ts-ignore - React types não no escopo direto
-                  onDrop: () => handleDropToSlot(diaIndex, min),
-                  title: `Soltar em ${minutesToLabel(min)}`,
-                })
-              ),
-
-              // Cards (âncoras + POIs)
-              ...dia.pontos
-                .filter(p => typeof p.inicioMin === 'number')
-                .sort(byHorario)
-                .map((ponto) => {
-                  const start = snapToSlot(ponto.inicioMin!);
-                  const dur = ponto.tipo === 'interesse' ? Math.max(SLOT_MIN, ponto.tempo || SLOT_MIN) : SLOT_MIN;
-                  const end = Math.min(DAY_END_MIN, start + dur);
-                  const span = Math.max(1, Math.ceil((end - start) / SLOT_MIN));
-                  const rowIndex = Math.round((start - DAY_START_MIN) / SLOT_MIN) + 1;
-                  if (rowIndex < 1 || rowIndex > NUM_ROWS) return null;
-
-                  const kind = ponto.tipo === 'base' ? 'base' : 'poi';
-                  const cls = `tt-card ${kind} ${ponto.fixo ? 'fixo' : ''}`;
-
-                  const pIndex = roteiro[diaIndex].pontos.findIndex(
-                    pp => pp.id === ponto.id && pp.inicioMin === ponto.inicioMin
-                  );
-
-                  return h(
-                    'div',
-                    {
-                      key: ponto.id + '@' + ponto.inicioMin,
-                      style: { gridRow: `${rowIndex} / span ${span}`, margin: '6px' },
-                      className: `${cls} px-2 py-1 border text-xs`,
-                      draggable: !ponto.fixo,
-                      onDragStart: () => {
-                        if (!ponto.fixo) {
-                          handleDragStart(ponto, { diaIndex, pontoIndex: pIndex });
+                    return (
+                      <div
+                        key={ponto.id + '@' + (ponto.inicioMin ?? 'x')}
+                        style={start !== null ? { gridRow: `${rowIndex} / span ${span}`, margin: '6px' } : { margin: '6px' }}
+                        className={`tt-card ${kind} px-2 py-1 border text-xs`}
+                        draggable={canDrag}
+                        onDragStart={() => startDragCard(diaIndex, pontoIndex, ponto)}
+                        onDragOver={(e) => e.preventDefault()}
+                        // Soltar uma base sobre um card → corta exatamente no início do card
+                        onDrop={() => {
+                          if (!dragItem) return;
+                          if (dragItem.tipo === 'base' && start !== null) {
+                            dropOnSlot(diaIndex, start);
+                          } else if (dragItem.tipo === 'base-end' && start !== null) {
+                            dropOnSlot(diaIndex, start);
+                          } else if (dragItem.tipo === 'interesse' && start !== null) {
+                            dropOnSlot(diaIndex, start);
+                          }
+                        }}
+                        title={
+                          isBaseStart ? '🏠 Início do dia (arraste para usar esta base em outro ponto do dia)'
+                          : isBaseEnd ? '🏁 Término do dia (arraste para mudar horário)'
+                          : 'Arraste para outro horário/dia'
                         }
-                      },
-                      title: ponto.fixo ? 'Base do dia' : 'Arraste para outro horário/dia',
-                    },
-                    h('div', { className: 'bar' }),
-                    h('div', { className: 'tt-title truncate' }, ponto.label),
-                    ponto.tipo === 'interesse'
-                      ? h('div', { className: 'tt-meta' }, `${Math.max(SLOT_MIN, ponto.tempo || SLOT_MIN)} min`)
-                      : null,
-                    !ponto.fixo
-                      ? h(
-                          'button',
-                          {
-                            className: 'tt-remove',
-                            title: 'Remover',
-                            onClick: (e: any) => {
+                      >
+                        <div className="bar" />
+                        <div className="title truncate">
+                          {isBaseStart ? `🏠 Início — ${ponto.label}`
+                           : isBaseEnd ?  `🏁 Término — ${ponto.label}`
+                           : ponto.label}
+                        </div>
+                        {!isBase && (
+                          <div className="meta">{Math.max(SLOT_MIN, ponto.tempo || SLOT_MIN)} min</div>
+                        )}
+                        {!isBase && (
+                          <button
+                            className="close"
+                            title="Remover"
+                            onClick={(e) => {
                               e.stopPropagation();
-                              handleRemove(diaIndex, pIndex);
-                            },
-                          },
-                          '✕'
-                        )
-                      : null
-                  );
-                })
-            )
-          )
-        )
-      )
-    )
+                              const updated = cloneRoteiro(roteiro);
+                              const src = updated[diaIndex] ?? dia;
+                              const srcCopy = { ...src, pontos: [...src.pontos] };
+                              const idx = srcCopy.pontos.findIndex(pp => pp.id === ponto.id);
+                              if (idx >= 0) srcCopy.pontos.splice(idx, 1);
+                              updated[diaIndex] = srcCopy;
+
+                              if (typeof onUpdateDisponiveis === 'function') {
+                                onUpdateDisponiveis(dedupeById([...pontosDisponiveis, { ...ponto }]));
+                              }
+                              propagate(updated);
+                            }}
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
   );
 }
 
-// Exportações
 export default TravelPlannerBoard;

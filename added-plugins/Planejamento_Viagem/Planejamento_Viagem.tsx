@@ -1,3 +1,4 @@
+// Planejamento_Viagem.tsx
 import { RoteiroForm } from './components/RoteiroForm';
 import { RoteiroResumo } from './components/RoteiroResumo';
 import { TravelPlannerBoard } from './components/TravelPlannerBoard';
@@ -16,6 +17,34 @@ const {
 const directionService = window.PluginDependencies.directionService;
 const { MdOutlineMap } = ReactIcons?.md ?? {};
 
+/** ----------------- Paleta de cores por dia (RGBA) ----------------- **/
+const DAY_COLORS: number[][] = [
+  [ 59, 130, 246, 0.95 ], // azul
+  [ 16, 185, 129, 0.95 ], // esmeralda
+  [234, 179,   8, 0.95 ], // amarelo
+  [244,  63,  94, 0.95 ], // rose
+  [139,  92, 246, 0.95 ], // violeta
+  [245, 158,  11, 0.95 ], // amber
+  [ 34, 197,  94, 0.95 ], // green
+  [239,  68,  68, 0.95 ], // red
+];
+const colorForDay = (i: number) => DAY_COLORS[i % DAY_COLORS.length];
+
+/** Tipo do “vetor de viagens” que vamos logar (debug/validação) */
+type ViagemLeg = {
+  from: string;
+  to: string;
+  distance?: number; // metros (se summary vier)
+  duration?: number; // segundos (se summary vier)
+};
+type ViagensDia = {
+  dayIndex: number;
+  date?: string;
+  colorIndex: number;
+  color: number[];
+  legs: ViagemLeg[];
+};
+
 function TerraTripperPluginContent() {
   const { changeMenuOption } = useMenu();
   const [roteiro, setRoteiro] = React.useState<any>(null);
@@ -26,13 +55,12 @@ function TerraTripperPluginContent() {
   const [hover, setHover] = React.useState(false);
 
   // ---------- Helpers de sincronização ----------
-  const recomputeLockRef = React.useRef(false);              // impede concorrência
-  const queuedBoardRef = React.useRef<any[] | null>(null);   // guarda último pedido
-  const lastSigRef = React.useRef<string>('');               // assinatura do board atual
-  const tokenRef = React.useRef(0);                          // invalida respostas antigas
+  const recomputeLockRef = React.useRef(false);
+  const queuedBoardRef = React.useRef<any[] | null>(null);
+  const lastSigRef = React.useRef<string>('');
+  const tokenRef = React.useRef(0);
 
   function boardSignature(board: any[]): string {
-    // Assinatura com pares (id->id) por dia; ignora dados irrelevantes
     const segs = board.map(d => {
       const ids = (d.pontos || []).map((p: any) => p?.id).filter(Boolean);
       const pairs: string[] = [];
@@ -45,10 +73,10 @@ function TerraTripperPluginContent() {
   async function clearAllRoutes(prevDirections: InstanceType<typeof Direction>[]) {
     try {
       let cleared = false;
-      if (directionService?.clear) { await directionService.clear(); cleared = true; }
-      if (directionService?.clearSource) { await directionService.clearSource(); cleared = true; }
-      if (directionService?.reset) { await directionService.reset(); cleared = true; }
-      if (directionService?.removeAll) { await directionService.removeAll(); cleared = true; }
+      if (directionService?.clear)        { await directionService.clear(); cleared = true; }
+      if (directionService?.clearSource)  { await directionService.clearSource(); cleared = true; }
+      if (directionService?.reset)        { await directionService.reset(); cleared = true; }
+      if (directionService?.removeAll)    { await directionService.removeAll(); cleared = true; }
       if (!cleared && prevDirections?.length && directionService?.removeDirection) {
         for (const d of prevDirections) await directionService.removeDirection(d.id);
       }
@@ -57,7 +85,7 @@ function TerraTripperPluginContent() {
     }
   }
 
-  // ---------- Recompute com lock + última requisição vence ----------
+  /** ----------------- Recompute de rotas (coloridas por dia) ----------------- **/
   const recomputeRoutes = React.useCallback(async (novoBoard: any[]) => {
     const sig = boardSignature(novoBoard);
     if (sig === lastSigRef.current) return;
@@ -73,20 +101,26 @@ function TerraTripperPluginContent() {
     const myToken = ++tokenRef.current;
 
     try {
-      // 1) limpa rotas atuais
       await clearAllRoutes(directions);
       setDirections([]);
 
-      // 2) cria novas rotas SEQUENCIALMENTE
       const { fetchDirectionsController } = window.PluginDependencies;
       const novas: InstanceType<typeof Direction>[] = [];
 
-      for (const dia of novoBoard) {
+      const viagensPorDia: ViagensDia[] = [];
+
+      for (let dayIndex = 0; dayIndex < novoBoard.length; dayIndex++) {
+        const dia = novoBoard[dayIndex];
         const pts = (dia?.pontos || []) as Array<{
           id: string;
           label: string;
           coordinates: [number, number];
         }>;
+
+        const color = colorForDay(dayIndex);
+        const colorIndex = dayIndex % DAY_COLORS.length;
+
+        const legs: ViagemLeg[] = [];
 
         for (let i = 0; i < pts.length - 1; i++) {
           if (myToken !== tokenRef.current) return;
@@ -110,15 +144,50 @@ function TerraTripperPluginContent() {
               },
             });
 
+            // === APLICAR COR DO DIA E INDEX ===
+            const props: any = result?.geojson?.properties ?? {};
+            props.color = color;            // <- number[] conforme seu type DirectionProperties
+            props.colorIndex = colorIndex;  // <- qual cor do dia usamos
+            props.query = {
+              origin,
+              destination,
+              preference: 'recommended',
+              options: {
+                avoidBorders: 'none',
+                avoidFeatures: { highways: false, tollways: false, ferries: false },
+              },
+            };
+            (result as any).geojson.properties = props;
+
             if (myToken !== tokenRef.current) return;
 
             await directionService.addDirection(result);
             novas.push(result);
+
+            // preencher vetor de viagens (debug/validação)
+            const summary = props?.summary ?? {};
+            legs.push({
+              from: origin?.label ?? `${origin.coordinates}`,
+              to: destination?.label ?? `${destination.coordinates}`,
+              distance: typeof summary.distance === 'number' ? summary.distance : undefined,
+              duration: typeof summary.duration === 'number' ? summary.duration : undefined,
+            });
           } catch (e) {
             console.warn('Falha ao calcular um trecho:', e);
           }
         }
+
+        viagensPorDia.push({
+          dayIndex,
+          date: dia?.data,
+          colorIndex,
+          color,
+          legs,
+        });
       }
+
+      // ---------- LOG do vetor de viagens por dia ----------
+      console.log('[TerraTripper] viagensPorDia:', viagensPorDia);
 
       if (myToken === tokenRef.current) setDirections(novas);
     } finally {
@@ -133,55 +202,28 @@ function TerraTripperPluginContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [directions]);
 
-  // ---------- Submit inicial ----------
+  /** ----------------- Submit inicial ----------------- **/
   async function handleSubmit(roteiro: any) {
     setRoteiro(roteiro);
-    const { fetchDirectionsController } = window.PluginDependencies;
 
     try {
-      const dirs: InstanceType<typeof Direction>[] = [];
-
-      for (let i = 0; i < roteiro.pontos.length - 1; i++) {
-        const origin = roteiro.pontos[i];
-        const destination = roteiro.pontos[i + 1];
-
-        const result = await fetchDirectionsController.execute({
-          origin,
-          destination,
-          profile: 'driving-car',
-          preference: 'recommended',
-          options: {
-            avoidBorders: 'none',
-            avoidFeatures: {
-              highways: false,
-              tollways: false,
-              ferries: false,
-            },
-          },
-        });
-
-        await directionService.addDirection(result);
-        dirs.push(result);
-      }
-
-      setDirections(dirs);
-
-      // Monta o board e zera a coluna de "recolocar"
+      // 1) Monta o board inicial (dias) a partir do formulário
       const initialBoard = await generateInitialBoard(roteiro);
       const diasRoteiro = convertToDiaRoteiro(initialBoard, roteiro.pontos);
+
       setRoteiroBoard(diasRoteiro);
       setPontosDisponiveis([]);
 
-      // guarda assinatura inicial
+      // 2) Guarda assinatura inicial e já desenha rotas coloridas por dia
       lastSigRef.current = boardSignature(diasRoteiro);
+      await recomputeRoutes(diasRoteiro);
     } catch (e) {
-      console.error('Erro ao desenhar rota:', e);
+      console.error('Erro ao preparar/desenhar rotas iniciais:', e);
     }
   }
 
   // ---------- Catálogo de bases (tipado) ----------
   const toKey = React.useCallback((p: PontoRoteiro) => {
-    // se houver id, usa; senão, usa chave composta estável
     return p.id ?? `${p.label}|${p.coordinates[0]},${p.coordinates[1]}`;
   }, []);
 
@@ -190,7 +232,7 @@ function TerraTripperPluginContent() {
 
     const pairs: [string, PontoRoteiro][] = pontos
       .filter((p): p is PontoRoteiro => !!p && typeof p === 'object' && p.tipo === 'base')
-      .map((p): [string, PontoRoteiro] => [toKey(p), p]); // <- tupla tipada
+      .map((p): [string, PontoRoteiro] => [toKey(p), p]);
 
     return Array.from(new Map<string, PontoRoteiro>(pairs).values());
   }, [roteiro, toKey]);
@@ -237,8 +279,8 @@ function TerraTripperPluginContent() {
               style={{
                 left: '380px',
                 width: 'calc(100% - 380px)',
-                height: '60vh',       // altura fixa pro FC gerir o scroll interno
-                overflow: 'auto',   // deixa o FC controlar o scroll Y
+                height: '60vh',
+                overflow: 'auto',
               }}
             >
               <TravelPlannerBoard
