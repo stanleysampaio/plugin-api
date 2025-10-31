@@ -1,4 +1,12 @@
-const { React } = window.PluginDependencies;
+/** @jsx _R.createElement */
+/** @jsxFrag _R.Fragment */
+/** @jsxRuntime classic */
+/* eslint-disable */
+/* @ts-nocheck */
+
+// React via PluginDependencies (sem imports)
+const _PD: any = (window as any).PluginDependencies || {};
+const _R: typeof import('react') = _PD.React;
 
 interface PointResult {
   label?: string;
@@ -27,23 +35,19 @@ interface Props {
   directions?: Direction[];
 }
 
+/* ---------- Helpers de distância ---------- */
 function haversineMeters(a: [number, number], b: [number, number]): number {
-  // a,b = [lon, lat] em graus
-  const R = 6371000; // raio médio da Terra (m)
+  const R = 6371000;
   const toRad = (deg: number) => (deg * Math.PI) / 180;
-
   const [lon1, lat1] = a;
   const [lon2, lat2] = b;
-
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const φ1 = toRad(lat1);
   const φ2 = toRad(lat2);
-
   const s =
-    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(φ1) * Math.cos(φ2) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
-
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(φ1) * Math.cos(φ2) * Math.sin(dLon / 2) ** 2;
   const c = 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
   return R * c;
 }
@@ -67,6 +71,17 @@ function lineStringLengthMeters(coords: Array<[number, number]>): number {
   return total;
 }
 
+/* ---------- Cores por dia vindas do Board ---------- */
+function getDayColorsLegend():
+  Array<{ day: string; color: string; legs: number }> {
+  const viagens = (window as any).TT_VIAGENS || [];
+  return viagens.map((v: any) => ({
+    day: v.day,
+    color: v.color,
+    legs: Array.isArray(v.legs) ? v.legs.length : 0,
+  }));
+}
+
 export function RoteiroResumo({ roteiro, directions = [] }: Props) {
   const total = roteiro.pontos.length;
 
@@ -80,7 +95,7 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
   const destino = formatPoint(roteiro.pontos[total - 1]);
   const paradas = roteiro.pontos.slice(1, total - 1);
 
-  // 1) Tenta medir pela geometria das rotas
+  // 1) pela geometria das rotas
   const metersFromDirections = directions.reduce((acc, d) => {
     const geom = d?.geojson?.geometry;
     if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
@@ -89,7 +104,7 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
     return acc;
   }, 0);
 
-  // 2) Fallback: distância direta entre os pontos informados no formulário
+  // 2) fallback entre os pontos do formulário
   const metersFallback = (() => {
     let sum = 0;
     for (let i = 0; i < roteiro.pontos.length - 1; i++) {
@@ -107,10 +122,43 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
     maximumFractionDigits: 1,
   });
 
+  const legend = getDayColorsLegend();
+
   return (
     <section className="mt-4 border-t pt-4 bg-blue-50 p-4 rounded">
       <h3 className="font-semibold text-lg">Resumo do Roteiro</h3>
-      <ul className="list-disc ml-5 mt-2 text-sm space-y-1">
+
+      {/* Legenda das cores por dia (se existir do board) */}
+      {legend.length > 0 && (
+        <div className="mt-3">
+          <div className="text-sm font-medium mb-1">Cores por dia:</div>
+          <div className="flex flex-wrap gap-2">
+            {legend.map(({ day, color, legs }) => (
+              <div
+                key={day}
+                className="flex items-center gap-2 px-2 py-1 rounded border bg-white"
+                style={{ borderColor: '#e5e7eb' }}
+                title={`Trechos: ${legs}`}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    display: 'inline-block',
+                    width: 14,
+                    height: 14,
+                    borderRadius: 4,
+                    background: color,
+                    boxShadow: '0 0 0 1px rgba(0,0,0,.08) inset',
+                  }}
+                />
+                <span className="text-xs font-semibold">{day}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <ul className="list-disc ml-5 mt-3 text-sm space-y-1">
         <li><strong>Data de Ida:</strong> {roteiro.dataIda}</li>
         <li><strong>Data de Volta:</strong> {roteiro.dataVolta}</li>
         <li><strong>Origem:</strong> {origem}</li>
@@ -133,3 +181,5 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
     </section>
   );
 }
+
+export default RoteiroResumo;
