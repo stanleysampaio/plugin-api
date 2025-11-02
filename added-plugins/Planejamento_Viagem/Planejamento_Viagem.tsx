@@ -1,4 +1,7 @@
-// Planejamento_Viagem.tsx
+/** @jsx _R.createElement */
+/** @jsxFrag _R.Fragment */
+/** @jsxRuntime classic */
+
 import { RoteiroForm } from './components/RoteiroForm';
 import { RoteiroResumo } from './components/RoteiroResumo';
 import { TravelPlannerBoard } from './components/TravelPlannerBoard';
@@ -6,17 +9,22 @@ import { generateInitialBoard } from './components/generateInitialBoard';
 import { convertToDiaRoteiro } from './components/convertToDiaRoteiro';
 import type { PontoRoteiro } from './components/types';
 
-const {
-  React,
-  GoBackButton,
-  ReactIcons,
-  useMenu,
-  Direction,
-} = window.PluginDependencies;
+/* ========= PluginDependencies com aliases seguros ========= */
+const __PD: any = (window as any).PluginDependencies || {};
+const _R: typeof import('react') = __PD.React;
 
-const directionService = window.PluginDependencies.directionService;
-const { MdOutlineMap } = ReactIcons?.md ?? {};
+const TT_GoBackButton = __PD.GoBackButton;
+const TT_ReactIcons   = __PD.ReactIcons;
+const TT_useMenu      = __PD.useMenu;
+const TT_Direction    = __PD.Direction;
 
+const TT_directionService = __PD.directionService;
+const TT_pinService       = __PD.pinService;
+
+const { MdOutlineMap: TT_MdOutlineMap } = (TT_ReactIcons?.md ?? {}) as any;
+
+
+(window as any).TERRA_PIN_LAYER_ID = 'pins';
 /** ----------------- Paleta de cores por dia (RGBA) ----------------- **/
 const DAY_COLORS: number[][] = [
   [ 59, 130, 246, 0.95 ], // azul
@@ -30,63 +38,143 @@ const DAY_COLORS: number[][] = [
 ];
 const colorForDay = (i: number) => DAY_COLORS[i % DAY_COLORS.length];
 
-/** Tipo do “vetor de viagens” que vamos logar (debug/validação) */
-type ViagemLeg = {
-  from: string;
-  to: string;
-  distance?: number; // metros (se summary vier)
-  duration?: number; // segundos (se summary vier)
+function rgbaToHex([r,g,b]: number[]) {
+  const h = (n:number)=>Math.max(0,Math.min(255,Math.round(n))).toString(16).padStart(2,'0');
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+/** ----------------- Tipos p/ debug ----------------- */
+type ViagemLeg = { from: string; to: string; distance?: number; duration?: number; };
+type ViagensDia = { dayIndex: number; date?: string; colorIndex: number; color: number[]; legs: ViagemLeg[]; };
+
+/** ----------------- Pins helpers ----------------- */
+type PinFeature = {
+  type: 'Feature';
+  id: string;
+  geometry: { type: 'Point'; coordinates: [number, number] };
+  properties: {
+    kind: 'base' | 'poi';
+    label?: string;
+    colorHex: string;
+    colorRGBA: [number, number, number, number];
+    day?: string;
+    dayIndex?: number;
+  };
 };
-type ViagensDia = {
-  dayIndex: number;
-  date?: string;
-  colorIndex: number;
-  color: number[];
-  legs: ViagemLeg[];
-};
 
-function TerraTripperPluginContent() {
-  const { changeMenuOption } = useMenu();
-  const [roteiro, setRoteiro] = React.useState<any>(null);
-  const [directions, setDirections] = React.useState<InstanceType<typeof Direction>[]>([]);
-  const [roteiroBoard, setRoteiroBoard] = React.useState<any[]>([]);
-  const [pontosDisponiveis, setPontosDisponiveis] = React.useState<any[]>([]);
-  const [mostrarQuadro, setMostrarQuadro] = React.useState(false);
-  const [hover, setHover] = React.useState(false);
+function stablePinId(dayIndex: number, date: string | undefined, p: { id?: string; label?: string; coordinates: [number,number] }, tag: string) {
+  const base = p?.id || p?.label || `${p.coordinates[0]},${p.coordinates[1]}`;
+  return `pin::${date ?? 'nodate'}::${dayIndex}::${tag}::${base}`;
+}
+function isBasePointId(pId?: string) {
+  if (!pId) return false;
+  return pId.startsWith('base-start-') || pId.startsWith('base-end-') || pId.startsWith('__base_of_');
+}
 
-  // ---------- Helpers de sincronização ----------
-  const recomputeLockRef = React.useRef(false);
-  const queuedBoardRef = React.useRef<any[] | null>(null);
-  const lastSigRef = React.useRef<string>('');
-  const tokenRef = React.useRef(0);
+/** 👇 NOVO: se houver uid, usamos o MESMO id do MapInput para substituir a “gotinha” */
+function idForMapPin(p: any, dayIndex: number, date?: string, tag?: string) {
+  if (p?.uid) return `point-${p.uid}`; // <- mesmo id que o MapInput usa
+  // fallback estável se não houver uid
+  return stablePinId(dayIndex, date, p, tag ?? 'poi');
+}
 
-  function boardSignature(board: any[]): string {
-    const segs = board.map(d => {
-      const ids = (d.pontos || []).map((p: any) => p?.id).filter(Boolean);
-      const pairs: string[] = [];
-      for (let i = 0; i < ids.length - 1; i++) pairs.push(`${ids[i]}->${ids[i + 1]}`);
-      return pairs.join('|');
-    });
-    return segs.join('||');
+function buildPinsFromBoard(board: any[]): PinFeature[] {
+  const pins: PinFeature[] = [];
+  for (let dayIndex = 0; dayIndex < board.length; dayIndex++) {
+    const day = board[dayIndex];
+    const pts = (day?.pontos || []) as Array<{ uid?: string; id?: string; label?: string; tipo?: 'base'|'interesse'; coordinates: [number, number] }>;
+    const rgba = colorForDay(dayIndex) as [number,number,number,number];
+    const hex = rgbaToHex(rgba);
+
+    for (const p of pts) {
+      if (p?.id && p.id.startsWith('__base_of_')) continue; // marcador invisível
+
+      const kind: 'base' | 'poi' = (p?.tipo === 'base') || isBasePointId(p?.id) ? 'base' : 'poi';
+      const featureId = idForMapPin(p, dayIndex, day?.data, kind);
+
+      pins.push({
+        type: 'Feature',
+        id: featureId,
+        geometry: { type: 'Point', coordinates: p.coordinates },
+        properties: { kind, label: p?.label, colorHex: hex, colorRGBA: rgba, day: day?.data, dayIndex },
+      });
+    }
   }
+  return pins;
+}
 
-  async function clearAllRoutes(prevDirections: InstanceType<typeof Direction>[]) {
+async function replaceAllPins(features: PinFeature[]) {
+  if (!TT_pinService) return;
+  try {
+    if (typeof TT_pinService.updateAllPins === 'function') {
+      await TT_pinService.updateAllPins(features);
+    } else if (typeof TT_pinService.setPins === 'function') {
+      await TT_pinService.setPins(features);
+    } else if (typeof TT_pinService.replaceAll === 'function') {
+      await TT_pinService.replaceAll(features);
+    } else {
+      if (typeof TT_pinService.clear === 'function') await TT_pinService.clear();
+      if (typeof TT_pinService.addPins === 'function') await TT_pinService.addPins(features);
+    }
+  } catch (e) {
+    console.warn('[TerraTripper] Falha ao atualizar pins:', e);
+  }
+}
+
+/** ----------------- Ordenação simples p/ rotas ----------------- */
+function orderedDaysForRouting(board: any[]): any[] {
+  return (board || []).map((d: any) => {
+    const start = (d?.pontos || []).find((p: any) => String(p?.id) === `base-start-${d?.data}`);
+    const end   = (d?.pontos || []).find((p: any) => String(p?.id) === `base-end-${d?.data}`);
+    const pois  = (d?.pontos || []).filter((p: any) => p?.tipo === 'interesse');
+    const seq = ([] as any[]).concat(start ? [start] : [], pois, end ? [end] : []);
+    return { ...d, pontos: seq.length ? seq : (d?.pontos || []) };
+  });
+}
+
+/** ----------------- Assinatura do board ----------------- */
+function boardSignature(board: any[]): string {
+  const segs = (board || []).map(d => {
+    const ids = (d?.pontos || []).map((p: any) => (p?.uid ? `point-${p.uid}` : p?.id)).filter(Boolean);
+    const pairs: string[] = [];
+    for (let i = 0; i < ids.length - 1; i++) pairs.push(`${ids[i]}->${ids[i + 1]}`);
+    return `${d?.data ?? ''}::${pairs.join('|')}`;
+  });
+  return segs.join('||');
+}
+
+/* ======================== Componente principal ======================== */
+function TerraTripperPluginContent() {
+  const { changeMenuOption } = TT_useMenu();
+  const [roteiro, setRoteiro] = _R.useState<any>(null);
+  const [directions, setDirections] = _R.useState<InstanceType<typeof TT_Direction>[]>([]);
+  const [roteiroBoard, setRoteiroBoard] = _R.useState<any[]>([]);
+  const [pontosDisponiveis, setPontosDisponiveis] = _R.useState<any[]>([]);
+  const [mostrarQuadro, setMostrarQuadro] = _R.useState(false);
+  const [hover, setHover] = _R.useState(false);
+
+  const recomputeLockRef = _R.useRef(false);
+  const queuedBoardRef   = _R.useRef<any[] | null>(null);
+  const lastSigRef       = _R.useRef<string>('');
+  const tokenRef         = _R.useRef(0);
+
+  async function clearAllRoutes(prev: InstanceType<typeof TT_Direction>[]) {
     try {
       let cleared = false;
-      if (directionService?.clear)        { await directionService.clear(); cleared = true; }
-      if (directionService?.clearSource)  { await directionService.clearSource(); cleared = true; }
-      if (directionService?.reset)        { await directionService.reset(); cleared = true; }
-      if (directionService?.removeAll)    { await directionService.removeAll(); cleared = true; }
-      if (!cleared && prevDirections?.length && directionService?.removeDirection) {
-        for (const d of prevDirections) await directionService.removeDirection(d.id);
+      if (TT_directionService?.clear)        { await TT_directionService.clear(); cleared = true; }
+      if (TT_directionService?.clearSource)  { await TT_directionService.clearSource(); cleared = true; }
+      if (TT_directionService?.reset)        { await TT_directionService.reset(); cleared = true; }
+      if (TT_directionService?.removeAll)    { await TT_directionService.removeAll(); cleared = true; }
+      if (!cleared && prev?.length && TT_directionService?.removeDirection) {
+        for (const d of prev) await TT_directionService.removeDirection(d.id);
       }
     } catch (e) {
       console.warn('Não foi possível limpar rotas antigas:', e);
     }
   }
 
-  /** ----------------- Recompute de rotas (coloridas por dia) ----------------- **/
-  const recomputeRoutes = React.useCallback(async (novoBoard: any[]) => {
+  /** ----------------- Recompute rotas + pins ----------------- */
+  const recomputeRoutes = _R.useCallback(async (novoBoard: any[]) => {
     const sig = boardSignature(novoBoard);
     if (sig === lastSigRef.current) return;
 
@@ -94,32 +182,31 @@ function TerraTripperPluginContent() {
       queuedBoardRef.current = novoBoard;
       return;
     }
-
     recomputeLockRef.current = true;
     queuedBoardRef.current = null;
     lastSigRef.current = sig;
     const myToken = ++tokenRef.current;
 
     try {
+      // pins por dia (AGORA usando os mesmos ids do MapInput se houver uid)
+      await replaceAllPins(buildPinsFromBoard(novoBoard));
+
+      // rotas
       await clearAllRoutes(directions);
       setDirections([]);
 
-      const { fetchDirectionsController } = window.PluginDependencies;
-      const novas: InstanceType<typeof Direction>[] = [];
+      const ordered = orderedDaysForRouting(novoBoard);
+      const { fetchDirectionsController } = __PD;
+      const novas: InstanceType<typeof TT_Direction>[] = [];
 
       const viagensPorDia: ViagensDia[] = [];
 
-      for (let dayIndex = 0; dayIndex < novoBoard.length; dayIndex++) {
-        const dia = novoBoard[dayIndex];
-        const pts = (dia?.pontos || []) as Array<{
-          id: string;
-          label: string;
-          coordinates: [number, number];
-        }>;
+      for (let dayIndex = 0; dayIndex < ordered.length; dayIndex++) {
+        const dia = ordered[dayIndex];
+        const pts = (dia?.pontos || []) as Array<{ uid?: string; id?: string; label: string; coordinates: [number, number] }>;
 
         const color = colorForDay(dayIndex);
         const colorIndex = dayIndex % DAY_COLORS.length;
-
         const legs: ViagemLeg[] = [];
 
         for (let i = 0; i < pts.length - 1; i++) {
@@ -127,7 +214,6 @@ function TerraTripperPluginContent() {
 
           const origin = pts[i];
           const destination = pts[i + 1];
-
           const [ol, oa] = origin.coordinates;
           const [dl, da] = destination.coordinates;
           if (ol === dl && oa === da) continue;
@@ -144,27 +230,21 @@ function TerraTripperPluginContent() {
               },
             });
 
-            // === APLICAR COR DO DIA E INDEX ===
             const props: any = result?.geojson?.properties ?? {};
-            props.color = color;            // <- number[] conforme seu type DirectionProperties
-            props.colorIndex = colorIndex;  // <- qual cor do dia usamos
+            props.color = color;
+            props.colorIndex = colorIndex;
             props.query = {
-              origin,
-              destination,
+              origin, destination,
               preference: 'recommended',
-              options: {
-                avoidBorders: 'none',
-                avoidFeatures: { highways: false, tollways: false, ferries: false },
-              },
+              options: { avoidBorders: 'none', avoidFeatures: { highways: false, tollways: false, ferries: false } },
             };
             (result as any).geojson.properties = props;
 
             if (myToken !== tokenRef.current) return;
 
-            await directionService.addDirection(result);
+            await TT_directionService.addDirection(result);
             novas.push(result);
 
-            // preencher vetor de viagens (debug/validação)
             const summary = props?.summary ?? {};
             legs.push({
               from: origin?.label ?? `${origin.coordinates}`,
@@ -177,22 +257,14 @@ function TerraTripperPluginContent() {
           }
         }
 
-        viagensPorDia.push({
-          dayIndex,
-          date: dia?.data,
-          colorIndex,
-          color,
-          legs,
-        });
+        viagensPorDia.push({ dayIndex, date: dia?.data, colorIndex, color, legs });
       }
 
-      // ---------- LOG do vetor de viagens por dia ----------
       console.log('[TerraTripper] viagensPorDia:', viagensPorDia);
 
       if (myToken === tokenRef.current) setDirections(novas);
     } finally {
       recomputeLockRef.current = false;
-
       if (queuedBoardRef.current) {
         const next = queuedBoardRef.current;
         queuedBoardRef.current = null;
@@ -202,19 +274,74 @@ function TerraTripperPluginContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [directions]);
 
-  /** ----------------- Submit inicial ----------------- **/
-  async function handleSubmit(roteiro: any) {
-    setRoteiro(roteiro);
+  /** ----------------- Submit inicial ----------------- */
+  async function handleSubmit(formData: any) {
+    setRoteiro(formData);
 
     try {
-      // 1) Monta o board inicial (dias) a partir do formulário
-      const initialBoard = await generateInitialBoard(roteiro);
-      const diasRoteiro = convertToDiaRoteiro(initialBoard, roteiro.pontos);
+      // 1) Rotas neutras (preview) + pins neutros SUBSTITUINDO a gotinha (mesmo id)
+      if (formData?.pontos?.length >= 2) {
+        try {
+          await clearAllRoutes(directions);
+          setDirections([]);
+
+          const { fetchDirectionsController } = __PD;
+          const tempRoutes: InstanceType<typeof TT_Direction>[] = [];
+
+          for (let i = 0; i < formData.pontos.length - 1; i++) {
+            const origin = formData.pontos[i];
+            const destination = formData.pontos[i + 1];
+            if (!origin?.coordinates || !destination?.coordinates) continue;
+
+            const result = await fetchDirectionsController.execute({
+              origin,
+              destination,
+              profile: 'driving-car',
+              preference: 'recommended',
+              options: {
+                avoidBorders: 'none',
+                avoidFeatures: { highways: false, tollways: false, ferries: false },
+              },
+            });
+
+            const props: any = result?.geojson?.properties ?? {};
+            props.color = [100,116,139,0.95]; // slate-500
+            props.colorIndex = -1;
+            (result as any).geojson.properties = props;
+
+            await TT_directionService.addDirection(result);
+            tempRoutes.push(result);
+          }
+          setDirections(tempRoutes);
+
+          if (TT_pinService) {
+            const neutrals: PinFeature[] = (formData.pontos || [])
+              .filter((p: any) => Array.isArray(p?.coordinates) && p.coordinates.length === 2)
+              .map((p: any, idx: number) => ({
+                type: 'Feature',
+                id: p?.uid ? `point-${p.uid}` : `point-fallback-${idx}`, // 👈 mesmo id do MapInput
+                geometry: { type: 'Point', coordinates: p.coordinates as [number,number] },
+                properties: {
+                  kind: p?.tipo === 'base' ? 'base' : 'poi',
+                  label: p?.label,
+                  colorHex: '#64748b',
+                  colorRGBA: [100,116,139,0.95],
+                }
+              }));
+            await replaceAllPins(neutrals);
+          }
+        } catch (e) {
+          console.warn('Rota inicial (form) falhou:', e);
+        }
+      }
+
+      // 2) Gera board e aplica pins/rotas coloridos (substitui ids novamente)
+      const initialBoard = await generateInitialBoard(formData);
+      const diasRoteiro  = convertToDiaRoteiro(initialBoard, formData.pontos);
 
       setRoteiroBoard(diasRoteiro);
       setPontosDisponiveis([]);
 
-      // 2) Guarda assinatura inicial e já desenha rotas coloridas por dia
       lastSigRef.current = boardSignature(diasRoteiro);
       await recomputeRoutes(diasRoteiro);
     } catch (e) {
@@ -222,27 +349,24 @@ function TerraTripperPluginContent() {
     }
   }
 
-  // ---------- Catálogo de bases (tipado) ----------
-  const toKey = React.useCallback((p: PontoRoteiro) => {
-    return p.id ?? `${p.label}|${p.coordinates[0]},${p.coordinates[1]}`;
-  }, []);
-
-  const baseCatalog = React.useMemo<PontoRoteiro[]>(() => {
+  // ---------- Catálogo de bases ----------
+  const toKey = _R.useCallback((p: PontoRoteiro) => (
+    p.id ?? `${p.label}|${p.coordinates[0]},${p.coordinates[1]}`
+  ), []);
+  const baseCatalog = _R.useMemo<PontoRoteiro[]>(() => {
     const pontos = (roteiro?.pontos ?? []) as PontoRoteiro[];
-
     const pairs: [string, PontoRoteiro][] = pontos
       .filter((p): p is PontoRoteiro => !!p && typeof p === 'object' && p.tipo === 'base')
       .map((p): [string, PontoRoteiro] => [toKey(p), p]);
-
     return Array.from(new Map<string, PontoRoteiro>(pairs).values());
   }, [roteiro, toKey]);
 
   return (
     <main className="p-4 flex flex-col gap-4 relative">
-      {typeof GoBackButton === 'function' ? (
-        <GoBackButton
+      {typeof TT_GoBackButton === 'function' ? (
+        <TT_GoBackButton
           title="TerraTripper"
-          icon={MdOutlineMap ?? (() => <span>📍</span>)}
+          icon={TT_MdOutlineMap ?? (() => <span>📍</span>)}
           onGoBack={() => changeMenuOption(undefined)}
         />
       ) : (
@@ -276,12 +400,7 @@ function TerraTripperPluginContent() {
           {mostrarQuadro && (
             <div
               className="fixed bottom-0 z-40 bg-white border-t border-l border-gray-300 shadow-xl p-4"
-              style={{
-                left: '380px',
-                width: 'calc(100% - 380px)',
-                height: '60vh',
-                overflow: 'auto',
-              }}
+              style={{ left: '380px', width: 'calc(100% - 380px)', height: '60vh', overflow: 'auto' }}
             >
               <TravelPlannerBoard
                 roteiro={roteiroBoard}
@@ -293,10 +412,7 @@ function TerraTripperPluginContent() {
               />
 
               <div className="mt-4">
-                <button
-                  onClick={() => setMostrarQuadro(false)}
-                  style={styles.botaoFechar}
-                >
+                <button onClick={() => setMostrarQuadro(false)} style={styles.botaoFechar}>
                   Fechar Quadro
                 </button>
               </div>

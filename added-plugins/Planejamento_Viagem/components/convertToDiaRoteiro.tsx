@@ -12,24 +12,30 @@ export interface DiaRoteiro {
  */
 export function convertToDiaRoteiro(
   board: BoardColumn[],
-  pontosOriginais: PontoRoteiro[]
+  pontosOriginais: any[]
 ): DiaRoteiro[] {
   return board.map((col) => {
     const pontos: PontoRoteiro[] = col.items.map((item) => {
-      const original = pontosOriginais[item.pointIndex];
+      const original = pontosOriginais[item.pointIndex] || {};
+      const mapId =
+        typeof original?.uid === 'string' ? `point-${original.uid}` :
+        (typeof original?.id === 'string' && original.id.startsWith('point-'))
+          ? original.id
+          : item.id;
 
       return {
-        id: item.id,
-        label: item.label,
+        id: mapId,                          // <- usa SEMPRE o id do MapInput
+        uid: original?.uid,
+        label: original?.label ?? item.label,
         tipo: item.type,
         tempo: item.time,
         fixo: item.fixo,
         coordinates: original?.coordinates ?? [0, 0],
-      };
+      } as any;
     });
 
     return {
-      data: col.label,
+      data: col.data,                       // <- ISO do dia (não o label)
       pontos,
     };
   });
