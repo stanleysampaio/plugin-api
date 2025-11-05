@@ -8,14 +8,14 @@ const _PD = (window as any).PluginDependencies || {};
 
 
 /* ===================== Config Board (timeline) ===================== */
-const MINUTES_PER_PIXEL = 1;           // 1 px = 1 min
-const DAY_START_MIN     = 8 * 60 + 30; // 08:30
-const DAY_END_MIN       = 18 * 60 + 30; // 18:30
-const DAY_CAP_MIN       = DAY_END_MIN - DAY_START_MIN; // 600 min
+const MINUTES_PER_PIXEL = 1;            // 1 px = 1 min
+const DAY_START_MIN     = 8 * 60 + 30;  // 08:30
+const DAY_END_MIN       = 19 * 60 + 0;  // ✅ 19:00 (ajustado)
+const DAY_CAP_MIN       = DAY_END_MIN - DAY_START_MIN; // altura da coluna
 
 /* Defaults visuais/duração */
-const BASE_CARD_MIN   = 120; // ✅ base = 2h
-const POI_CARD_MIN    = 60;  // POI = 1h (pode ajustar)
+const BASE_CARD_MIN   = 120; // ✅ base = 2h (e redimensionável)
+const POI_CARD_MIN    = 60;  // POI = 1h
 const RESIZE_STEP_MIN = 5;
 
 /* ===================== Tipos ===================== */
@@ -39,7 +39,7 @@ type Props = {
   onRebuildRoutes?: (novo: Dia[]) => void;
 };
 
-/* ===================== Paleta/cores por dia + rotas ===================== */
+/* ===================== Paleta/cores por dia ===================== */
 function hslToHex(h: number, s: number, l: number) {
   s /= 100; l /= 100;
   const k = (n: number) => (n + h / 30) % 12;
@@ -51,7 +51,7 @@ function hslToHex(h: number, s: number, l: number) {
 const PALETTE_15 = Array.from({ length: 15 }, (_, i) => hslToHex((i * 360 / 15 + 10) % 360, 72, 52));
 const colorForDay = (i: number) => PALETTE_15[i % PALETTE_15.length];
 
-/* Distância/ETA */
+/* ===================== Distância/ETA ===================== */
 function haversineMeters(a: [number, number], b: [number, number]) {
   const R = 6371000, toRad = (deg: number) => (deg * Math.PI) / 180;
   const [lon1, lat1] = a, [lon2, lat2] = b;
@@ -72,11 +72,78 @@ function etaFromRouteOrFallback(a: [number,number], b: [number,number]) {
   return etaFromKm(km);
 }
 
-/* Exposição p/ host desenhar rotas e pins */
+/* ===================== Pins (tema + atualização) ===================== */
+const pinService = _PD.pinService;
+(function ensurePinTheme() {
+  (window as any).TT_PIN_ICON_THEME = {
+    base: { glyph: 'house',  color: '#0ea5e9', halo: '#ffffff' },
+    poi:  { glyph: 'marker', color: '#8b5cf6', halo: '#ffffff' }
+  };
+  try {
+    pinService?.configure?.({
+      defaultIcons: {
+        base: (window as any).TT_PIN_ICON_THEME.base,
+        poi:  (window as any).TT_PIN_ICON_THEME.poi,
+      }
+    });
+  } catch {}
+})();
+
+/* ===================== Exposição para o host (rotas + pins) ===================== */
+function buildPins(board: Dia[], dayColors: string[]) {
+  // Agrupa por coordenada para detectar locais usados em múltiplos dias
+  const keyFor = (c: [number,number]) => `${c[0].toFixed(6)},${c[1].toFixed(6)}`;
+  const bucket: Record<string, Set<number>> = {}; // coord -> set de dayIndex
+
+  board.forEach((d, i) => {
+    d.pontos.forEach(p => {
+      const k = keyFor(p.coordinates);
+      if (!bucket[k]) bucket[k] = new Set<number>();
+      bucket[k].add(i);
+    });
+  });
+
+  const features: any[] = [];
+  board.forEach((d, i) => {
+    const dayColor = dayColors[i];
+    d.pontos.forEach((p) => {
+      const k = keyFor(p.coordinates);
+      const idxs = Array.from(bucket[k] || []);
+      const colorsHex = idxs.map(ii => dayColors[ii]); // multi-cores para o mesmo ponto em dias diferentes
+      features.push({
+        type: 'Feature',
+        id: `tt::${d.data}::${p.id ?? p.uid ?? p.label}`,
+        geometry: { type: 'Point', coordinates: p.coordinates },
+        properties: {
+          kind: p.tipo === 'base' ? 'base' : 'poi',
+          label: p.label,
+          day: d.data,
+          colorHex: dayColor,
+          colorsHex: Array.from(new Set(colorsHex)),
+          isMultiDay: colorsHex.length > 1,
+        }
+      });
+    });
+  });
+
+  try {
+    (window as any).TT_PIN_ICON_FACTORY = (feat: any) => {
+      const theme = (window as any).TT_PIN_ICON_THEME || {};
+      const def = feat?.properties?.kind === 'base' ? theme.base : theme.poi;
+      return { ...def, colors: feat?.properties?.colorsHex || [feat?.properties?.colorHex] };
+    };
+    pinService?.clear?.();
+    pinService?.updateAllPins?.(features);
+  } catch (e) {
+    console.warn('pinService/updateAllPins falhou:', e);
+  }
+}
+
 function notifyMapFull(board: Dia[], dayColors: string[], onRebuildRoutes?: (b: Dia[]) => void) {
+  // Rotas com cor por dia (igual ao cabeçalho) + HALO para contraste
   const viagens = board.map((d, i) => {
     const color = dayColors[i];
-    const legs = [];
+    const legs: any[] = [];
     let totalKm = 0, totalMin = 0;
 
     for (let k = 0; k < d.pontos.length - 1; k++) {
@@ -89,8 +156,8 @@ function notifyMapFull(board: Dia[], dayColors: string[], onRebuildRoutes?: (b: 
         a: A.coordinates, b: B.coordinates,
         distance_km: km, eta_min: eta,
         style: {
-          main: { color, weight: 5, opacity: 0.55, lineCap: 'round' },
-          halo: { color: '#000', weight: 8, opacity: 0.25, lineCap: 'round' }
+          halo:  { color, weight: 10, opacity: 0.18, lineCap: 'round' }, // borda na mesma cor (bem transparente)
+          main:  { color, weight: 5,  opacity: 0.70, lineCap: 'round' }, // linha principal (nítida e condizente)
         }
       });
     }
@@ -104,11 +171,16 @@ function notifyMapFull(board: Dia[], dayColors: string[], onRebuildRoutes?: (b: 
   (window as any).TT_ROUTE_COLOR_OF_DAY = (iso: string) => dayColorMap[iso] || '#3388ff';
 
   const flat = [];
-  for (const v of viagens) for (const l of v.legs)
+  for (const v of viagens) for (const l of v.legs) {
+    // o host pode desenhar 2 camadas por leg (halo + main)
     flat.push({ day: v.day, coords: [l.a, l.b], style: l.style });
+  }
   (window as any).TT_ROUTES = flat;
 
+  // Atualiza mapa (linhas + pins)
   try { (window as any).TT_DRAW_ROUTES?.(flat); } catch {}
+  try { buildPins(board, dayColors); } catch {}
+
   try { onRebuildRoutes?.(board); } catch {}
 }
 
@@ -142,7 +214,7 @@ function ensureEndIsBase(d: Dia) {
   } else {
     d.pontos[d.pontos.length - 1] = { ...last, fixo: false, id: `base-end-${d.data}`, tempo: last.tempo ?? BASE_CARD_MIN };
   }
-  // ✅ dedupe no fim do dia
+  // dedupe no fim do dia
   if (d.pontos.length >= 2) {
     const a = d.pontos[d.pontos.length - 1];
     const b = d.pontos[d.pontos.length - 2];
@@ -200,7 +272,9 @@ function dur(p?: Ponto) {
   return Math.max(RESIZE_STEP_MIN, Math.round(((p.tempo ?? POI_CARD_MIN) as number) / RESIZE_STEP_MIN) * RESIZE_STEP_MIN);
 }
 
-/** Agenda linear: empilha start/end considerando deslocamento */
+/** Agenda linear: empilha start/end considerando deslocamento.
+ *  ✅ Se o último item for o "Término — Base", ele é ancorado para ENCERRAR às 19:00.
+ */
 function scheduleDay(dia: Dia) {
   const items: Array<Ponto & { start: number; end: number; travelBefore: number }> = [];
   let clock = DAY_START_MIN;
@@ -212,11 +286,23 @@ function scheduleDay(dia: Dia) {
     const travel = i > 0 ? minutesBetween(prev, cur) : 0;
     clock += travel;
 
+    const isEndBase = (cur.id || '').startsWith('base-end-');
     const d = dur(cur);
-    const start = clock;
-    const end = Math.min(DAY_END_MIN, clock + d);
-    items.push({ ...cur, start, end, travelBefore: travel });
 
+    let start: number, end: number;
+
+    if (isEndBase) {
+      // Ancorar para terminar exatamente às 19:00
+      end = DAY_END_MIN;
+      start = Math.max(clock, end - d);
+      // Se por algum motivo o fluxo do dia estourar, mantém coerência
+      if (start > end) start = Math.max(DAY_START_MIN, end - d);
+    } else {
+      start = clock;
+      end = Math.min(DAY_END_MIN, clock + d);
+    }
+
+    items.push({ ...cur, start, end, travelBefore: travel });
     clock = end;
   }
   return items;
@@ -366,10 +452,10 @@ function Card({
       )}
 
       <div style={{ position: 'absolute', right: 8, bottom: 8, fontSize: 11, color: '#374151' }}>
-        {dur(item)} min
+        {Math.max(RESIZE_STEP_MIN, item.end - item.start)} min
       </div>
 
-      {/* ✅ alça de resize para TODOS os cards */}
+      {/* ✅ alça de resize para TODOS os cards (base e poi) */}
       <div
         onMouseDown={onMouseDown}
         style={{ position: 'absolute', left: 0, right: 0, bottom: -3, height: 6, cursor: 'ns-resize',
@@ -380,7 +466,7 @@ function Card({
   );
 }
 
-/* ===================== Board principal (MIX) ===================== */
+/* ===================== Board principal ===================== */
 export function TravelPlannerBoard({
   roteiro,
   pontosDisponiveis,
@@ -632,7 +718,7 @@ export function TravelPlannerBoard({
             <li><b>Rodapé</b> → define a base de <u>pernoite</u> (fim do dia) — sem duplicar</li>
             <li><b>Meio</b> → adiciona base intermediária (ex.: almoço)</li>
           </ul>
-          Todas as mudanças recalculam rotas, cores e métricas do cabeçalho automaticamente.
+          Todas as mudanças recalculam rotas, cores e pins automaticamente (mesma cor do cabeçalho).
         </div>
       </section>
     </div>
