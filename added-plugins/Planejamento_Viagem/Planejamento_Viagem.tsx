@@ -11,7 +11,7 @@ const _R: typeof import('react') = __PD.React;
 /* UI/Serviços expostos pelo host (com prefixo para evitar colisões) */
 const TT_GoBackButton      = __PD.GoBackButton;
 const TT_useMenu           = __PD.useMenu;
-const TT_Direction         = __PD.Direction;               // só p/ runtime; tipagem evitada
+const TT_Direction         = __PD.Direction;
 const TT_directionService  = __PD.directionService;
 const TT_pinService        = __PD.pinService;
 const { MdOutlineMap: TT_MdOutlineMap } = (__PD.ReactIcons?.md ?? {}) as any;
@@ -40,9 +40,7 @@ const rgbaToHex = ([r,g,b]: number[]) =>
 
 /* ========= Helpers ========= */
 function idForMapPin(point: any, dayIndex: number, date?: string, kind?: 'base'|'poi') {
-  // se veio do PluginMapInput, preserve o ID para sobrescrever a gotinha
   if (point?.uid) return `point-${point.uid}`;
-  // fallback estável
   const base = point?.id || point?.label || `${point.coordinates?.[0]},${point.coordinates?.[1]}`;
   return `pin::${date ?? 'nodate'}::${dayIndex}::${kind ?? 'poi'}::${base}`;
 }
@@ -91,7 +89,7 @@ function buildPinsFromBoard(board: any[]) {
     const rgba = colorForDay(dayIndex) as [number,number,number,number];
     const hex  = rgbaToHex(rgba);
     for (const p of (day?.pontos || [])) {
-      if (p?.id && p.id.startsWith('__base_of_')) continue; // marcador invisível
+      if (p?.id && p.id.startsWith('__base_of_')) continue;
       const kind: 'base'|'poi' = (p?.tipo === 'base') || isBaseId(p?.id) ? 'base' : 'poi';
       pins.push({
         type: 'Feature',
@@ -117,7 +115,7 @@ function TerraTripperPluginContent() {
 
   const [formRoteiro, setFormRoteiro] = _R.useState<any>(null);
   const [directions, setDirections]   = _R.useState<any[]>([]);
-  const [board, setBoard]             = _R.useState<any[]>([]);      // dias normalizados
+  const [board, setBoard]             = _R.useState<any[]>([]);
   const [disponiveis, setDisponiveis] = _R.useState<any[]>([]);
   const [mostrarQuadro, setMostrar]   = _R.useState(false);
   const [hover, setHover]             = _R.useState(false);
@@ -127,8 +125,14 @@ function TerraTripperPluginContent() {
   const lastSigRef       = _R.useRef<string>('');
   const tokenRef         = _R.useRef(0);
 
-  // sempre deixamos habilitado redesenho de rotas ao mexer no Board
-  _R.useEffect(() => { (window as any).TT_DRAW_ROUTES = true; }, []);
+  /* ==== Redraw “de segurança” quando o quadro abre ==== */
+  _R.useEffect(() => {
+    if (mostrarQuadro) {
+      const ping = () => (window as any).TT_ON_BOARD_OPEN?.();
+      // vários pulsos para garantir depois do mount
+      ping(); setTimeout(ping, 120); setTimeout(ping, 300);
+    }
+  }, [mostrarQuadro]);
 
   async function clearAllRoutes(prevList?: any[]) {
     try {
@@ -145,7 +149,7 @@ function TerraTripperPluginContent() {
     }
   }
 
-  /** ==================== O coração: recalcula rotas + cores + métricas ==================== */
+  /** ==================== Cálculo de rotas + cores + métricas ==================== */
   const recomputeRoutes = _R.useCallback(async (novoBoard: any[]) => {
     const sig = boardSignature(novoBoard);
     if (sig === lastSigRef.current) return;
@@ -161,10 +165,8 @@ function TerraTripperPluginContent() {
     const myToken = ++tokenRef.current;
 
     try {
-      // PINS — sobrescreve gotinhas com as cores do dia
       await replaceAllPins(buildPinsFromBoard(novoBoard));
 
-      // LIMPA DIREÇÕES
       await clearAllRoutes(directions);
       setDirections([]);
 
@@ -173,7 +175,7 @@ function TerraTripperPluginContent() {
 
       const novas: any[] = [];
       const viagensPorDia: any[] = [];
-      const durationIndex: Record<string, number> = {}; // "lon1,lat1|lon2,lat2" -> minutos
+      const durationIndex: Record<string, number> = {};
 
       for (let dayIndex = 0; dayIndex < ordered.length; dayIndex++) {
         const dia   = ordered[dayIndex];
@@ -183,7 +185,7 @@ function TerraTripperPluginContent() {
 
         const legs: any[] = [];
         for (let i = 0; i < pts.length - 1; i++) {
-          if (myToken !== tokenRef.current) return; // cancelado
+          if (myToken !== tokenRef.current) return;
 
           const origin = pts[i];
           const destination = pts[i + 1];
@@ -200,7 +202,7 @@ function TerraTripperPluginContent() {
             });
 
             const props: any = (result?.geojson?.properties ?? {});
-            props.color = rgba;               // nosso Direction lê isso
+            props.color = rgba;
             props.colorHex = hex;
             props.colorIndex = dayIndex % DAY_COLORS.length;
             (result.geojson.properties = props);
@@ -245,7 +247,6 @@ function TerraTripperPluginContent() {
         });
       }
 
-      // 🔴 Board lê estes objetos para chips “km/min” e “→ X min”
       (window as any).TT_VIAGENS = viagensPorDia;
       (window as any).TT_ROUTE_DURATIONS = durationIndex;
 
@@ -286,7 +287,7 @@ function TerraTripperPluginContent() {
           });
 
           const props: any = (result?.geojson?.properties ?? {});
-          props.color = [100,116,139,0.95]; // slate-500
+          props.color = [100,116,139,0.95]; // slate-500 (preview)
           props.colorHex = '#64748b';
           props.colorIndex = -1;
           (result.geojson.properties = props);
@@ -296,7 +297,6 @@ function TerraTripperPluginContent() {
         }
         setDirections(temp);
 
-        // pins neutros sobrescrevendo ids do MapInput
         if (TT_pinService) {
           const neutrals = (formData.pontos || [])
             .filter((p: any) => Array.isArray(p?.coordinates) && p.coordinates.length === 2)
@@ -322,11 +322,17 @@ function TerraTripperPluginContent() {
     try {
       const initialBoard = await generateInitialBoard(formData);
       const diasRoteiro  = convertToDiaRoteiro(initialBoard, formData.pontos);
+
       setBoard(diasRoteiro);
       setDisponiveis([]);
 
-      lastSigRef.current = boardSignature(diasRoteiro);
+      // ⚠️ NÃO marque lastSigRef aqui — deixe recomputeRoutes rodar a 1ª vez
+      // lastSigRef.current = boardSignature(diasRoteiro);
+
       await recomputeRoutes(diasRoteiro);
+
+      // se o quadro já estiver aberto, força reaplicar as cores
+      setTimeout(() => (window as any).TT_ON_BOARD_OPEN?.(), 50);
     } catch (e) {
       console.error('Erro ao preparar/desenhar rotas iniciais:', e);
     }
@@ -388,7 +394,7 @@ function TerraTripperPluginContent() {
                 pontosDisponiveis={disponiveis}
                 baseCatalog={baseCatalog}
                 onUpdateDisponiveis={setDisponiveis}
-                onRebuildRoutes={recomputeRoutes}   // <- board chamará SEMPRE
+                onRebuildRoutes={recomputeRoutes}   // Board chamará SEMPRE
               />
 
               <div className="mt-4">
