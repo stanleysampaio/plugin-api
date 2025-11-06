@@ -129,7 +129,6 @@ function TerraTripperPluginContent() {
   _R.useEffect(() => {
     if (mostrarQuadro) {
       const ping = () => (window as any).TT_ON_BOARD_OPEN?.();
-      // vários pulsos para garantir depois do mount
       ping(); setTimeout(ping, 120); setTimeout(ping, 300);
     }
   }, [mostrarQuadro]);
@@ -150,7 +149,7 @@ function TerraTripperPluginContent() {
   }
 
   /** ==================== Cálculo de rotas + cores + métricas ==================== */
-  const recomputeRoutes = _R.useCallback(async (novoBoard: any[]) => {
+    const recomputeRoutes = _R.useCallback(async (novoBoard: any[]) => {
     const sig = boardSignature(novoBoard);
     if (sig === lastSigRef.current) return;
 
@@ -247,10 +246,75 @@ function TerraTripperPluginContent() {
         });
       }
 
+      /* —— NOVO: liga o fim do dia i ao início do dia i+1 —— */
+      for (let i = 0; i < ordered.length - 1; i++) {
+        const dayA = ordered[i];
+        const dayB = ordered[i + 1];
+        const lastA = (dayA?.pontos || []).slice(-1)[0];
+        const firstB = (dayB?.pontos || [])[0];
+
+        if (!lastA?.coordinates || !firstB?.coordinates) continue;
+        const [ol, oa] = lastA.coordinates;
+        const [dl, da] = firstB.coordinates;
+        if (ol === dl && oa === da) continue;
+
+        try {
+          const result: any = await __PD.fetchDirectionsController.execute({
+            origin: lastA,
+            destination: firstB,
+            profile: 'driving-car',
+            preference: 'recommended',
+            options: { avoidBorders: 'none', avoidFeatures: { highways: false, tollways: false, ferries: false } },
+          });
+
+          const rgba  = colorForDay(i);
+          const hex   = rgbaToHex(rgba);
+          const props: any = (result?.geojson?.properties ?? {});
+          props.color = rgba;
+          props.colorHex = hex;
+          props.colorIndex = i % DAY_COLORS.length;
+          (result.geojson.properties = props);
+
+          await TT_directionService.addDirection(result);
+          try {
+            result.setStrokeColor?.(hex);
+            TT_directionService.updateDirectionStyle?.(result.id, { color: hex, width: 4 });
+            TT_directionService.setColor?.(result.id, hex);
+          } catch {}
+
+          novas.push(result);
+
+          const summary = props?.summary || result?.geojson?.properties?.summary || {};
+          const distKm = typeof summary.distance === 'number' ? (summary.distance / 1000) : undefined;
+          const durMin = typeof summary.duration === 'number' ? Math.round(summary.duration / 60) : undefined;
+
+          viagensPorDia[i].legs.push({
+            a: lastA.coordinates, b: firstB.coordinates,
+            from: lastA?.label ?? `${lastA.coordinates}`,
+            to:   firstB?.label ?? `${firstB.coordinates}`,
+            distance_km: typeof distKm === 'number' ? Math.round(distKm) : 0,
+            eta_min:     typeof durMin === 'number' ? Math.max(1, durMin) : 0,
+          });
+          viagensPorDia[i].total_km  += typeof distKm === 'number' ? Math.round(distKm) : 0;
+          viagensPorDia[i].total_min += typeof durMin === 'number' ? Math.max(1, durMin) : 0;
+
+          if (typeof durMin === 'number') {
+            const key = `${lastA.coordinates[0]},${lastA.coordinates[1]}|${firstB.coordinates[0]},${firstB.coordinates[1]}`;
+            durationIndex[key] = Math.max(1, Math.round(durMin));
+          }
+        } catch (e) {
+          console.warn('Falha ao calcular trecho entre dias:', e);
+        }
+      }
+      /* —— FIM “liga-dias” —— */
+
       (window as any).TT_VIAGENS = viagensPorDia;
       (window as any).TT_ROUTE_DURATIONS = durationIndex;
 
-      if (myToken === tokenRef.current) setDirections(novas);
+      if (myToken === tokenRef.current) {
+        setDirections(novas);
+        requestAnimationFrame(() => window.dispatchEvent(new Event('tt:please-redraw')));
+      }
     } finally {
       recomputeLockRef.current = false;
       if (queuedBoardRef.current) {
@@ -259,7 +323,6 @@ function TerraTripperPluginContent() {
         void recomputeRoutes(next);
       }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [directions]);
 
   /* ==================== Submit inicial (Form) ==================== */
@@ -326,9 +389,6 @@ function TerraTripperPluginContent() {
       setBoard(diasRoteiro);
       setDisponiveis([]);
 
-      // ⚠️ NÃO marque lastSigRef aqui — deixe recomputeRoutes rodar a 1ª vez
-      // lastSigRef.current = boardSignature(diasRoteiro);
-
       await recomputeRoutes(diasRoteiro);
 
       // se o quadro já estiver aberto, força reaplicar as cores
@@ -394,7 +454,7 @@ function TerraTripperPluginContent() {
                 pontosDisponiveis={disponiveis}
                 baseCatalog={baseCatalog}
                 onUpdateDisponiveis={setDisponiveis}
-                onRebuildRoutes={recomputeRoutes}   // Board chamará SEMPRE
+                onRebuildRoutes={recomputeRoutes}   // agora só em interações do usuário
               />
 
               <div className="mt-4">
