@@ -17,8 +17,11 @@ interface AgrupamentoPorBase {
  * Agrupa os pontos de interesse pela base "mais próxima",
  * usando a API de rotas via `fetchDirectionsController`.
  *
- * Se der erro ou não houver controller, o generateInitialBoard
- * já tem fallback para distribuição simples.
+ * Importante:
+ * - Aqui não desenhamos nada no mapa, apenas usamos o backend de rotas
+ *   para pegar a distância (summary.distance).
+ * - Se der erro ou não houver controller, o generateInitialBoard
+ *   já tem fallback para distribuição simples.
  */
 export async function groupPointsByBase(
   bases: PontoRoteiro[],
@@ -63,7 +66,8 @@ export async function groupPointsByBase(
           },
         });
 
-        // mesmo padrão que usamos no plugin principal
+        // mesmo padrão que usamos no plugin principal:
+        // summary.distance em metros
         const distancia =
           rota?.geojson?.properties?.summary?.distance ?? Infinity;
 
