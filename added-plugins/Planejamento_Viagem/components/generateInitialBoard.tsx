@@ -1,21 +1,13 @@
-import { PontoRoteiro, TipoPonto, Roteiro } from './types';
+// components/generateInitialBoard.tsx
+
+import {
+  PontoRoteiro,
+  TipoPonto,
+  Roteiro,
+  BoardItem,
+  BoardColumn,
+} from './types';
 import { groupPointsByBase } from './groupPointsByBase';
-
-export interface BoardItem {
-  id: string;
-  pointIndex: number;
-  label: string;
-  time: number;        // minutos (POI) | 0 (base)
-  type: TipoPonto;     // 'base' | 'interesse'
-  fixo?: boolean;      // base âncora (início do dia 0)
-}
-
-export interface BoardColumn {
-  id: string;
-  label: string;
-  data: string;        // YYYY-MM-DD
-  items: BoardItem[];
-}
 
 /* ---------------- utils de data ---------------- */
 function toDate(iso: string) {
@@ -216,9 +208,10 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
     return Math.max(
       0,
       pontos.findIndex(
-        (q) => q.label === pt.label &&
-               q.coordinates?.[0] === pt.coordinates?.[0] &&
-               q.coordinates?.[1] === pt.coordinates?.[1]
+        (q) =>
+          q.label === pt.label &&
+          q.coordinates?.[0] === pt.coordinates?.[0] &&
+          q.coordinates?.[1] === pt.coordinates?.[1]
       )
     );
   };
@@ -227,13 +220,18 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
   let agrupado: Record<number, { base: PontoRoteiro; pontos: PontoRoteiro[] }>;
   try {
     const out = await groupPointsByBase(bases, poisAll);
-    const totalAlocados = Object.values(out).reduce((acc, g) => acc + (g?.pontos?.length ?? 0), 0);
+    const totalAlocados = Object.values(out).reduce(
+      (acc, g) => acc + (g?.pontos?.length ?? 0),
+      0
+    );
     if (!out || totalAlocados === 0) throw new Error('fallback');
     agrupado = out as any;
   } catch {
     agrupado = {};
     bases.forEach((b, i) => (agrupado[i] = { base: b, pontos: [] }));
-    poisAll.forEach((p, i) => agrupado[i % Math.max(1, bases.length)].pontos.push(p));
+    poisAll.forEach((p, i) =>
+      agrupado[i % Math.max(1, bases.length)].pontos.push(p)
+    );
   }
 
   if (bases.length === 0) {
@@ -253,7 +251,9 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
   }
 
   // necessidade de dias por base e alocação para caber no calendário
-  const need = bases.map((_, bi) => neededDaysForBase(agrupado[bi]?.pontos ?? []));
+  const need = bases.map((_, bi) =>
+    neededDaysForBase(agrupado[bi]?.pontos ?? [])
+  );
   const alloc = allocateDaysPerBase(bases.length, need, totalDays);
 
   // índice da base de cada dia (sequência contígua por base)
@@ -272,14 +272,20 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
   const dayIdxByBase: number[][] = bases.map(() => []);
   dayBaseIndex.forEach((bi, di) => dayIdxByBase[bi].push(di));
 
-  const bucketsPerDay: PontoRoteiro[][] = Array.from({ length: totalDays }, () => []);
+  const bucketsPerDay: PontoRoteiro[][] = Array.from(
+    { length: totalDays },
+    () => []
+  );
 
   for (let bi = 0; bi < bases.length; bi++) {
     const base = bases[bi];
     const myDayIdx = dayIdxByBase[bi];
     if (!myDayIdx.length) continue;
 
-    const ordered = orderByNearestFromBase(base, (agrupado[bi]?.pontos ?? []));
+    const ordered = orderByNearestFromBase(
+      base,
+      agrupado[bi]?.pontos ?? []
+    );
     const buckets = packIntoDays(ordered, myDayIdx.length);
 
     buckets.forEach((list, j) => {
@@ -335,7 +341,7 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
       label: baseTermino.label,
       time: 0,
       type: 'base',
-      // não marca fixo: a sua sincronização copiará este item como início fixo do dia seguinte
+      // não marca fixo: a sincronização copiará este item como início fixo do dia seguinte
     });
   }
 

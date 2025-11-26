@@ -14,6 +14,10 @@ const TT_useMenu           = __PD.useMenu;
 const TT_Direction         = __PD.Direction;
 const TT_directionService  = __PD.directionService;
 const TT_pinService        = __PD.pinService;
+
+// NOVO: interface de plugin baseada em hook (versionado no host)
+const TT_useDirections     = __PD.useDirections;
+
 const { MdOutlineMap: TT_MdOutlineMap } = (__PD.ReactIcons?.md ?? {}) as any;
 
 /* Componentes do plugin */
@@ -125,6 +129,14 @@ function TerraTripperPluginContent() {
   const lastSigRef       = _R.useRef<string>('');
   const tokenRef         = _R.useRef(0);
 
+  // NOVO: versão da API de direções exposta pelo host
+  const directionsAPIVersion =
+    typeof TT_useDirections?.version === 'function'
+      ? TT_useDirections.version()
+      : 'unknown';
+
+  (window as any).TT_DIRECTIONS_API_VERSION = directionsAPIVersion;
+
   /* ==== Redraw “de segurança” quando o quadro abre ==== */
   _R.useEffect(() => {
     if (mostrarQuadro) {
@@ -149,7 +161,7 @@ function TerraTripperPluginContent() {
   }
 
   /** ==================== Cálculo de rotas + cores + métricas ==================== */
-    const recomputeRoutes = _R.useCallback(async (novoBoard: any[]) => {
+  const recomputeRoutes = _R.useCallback(async (novoBoard: any[]) => {
     const sig = boardSignature(novoBoard);
     if (sig === lastSigRef.current) return;
 
@@ -246,7 +258,7 @@ function TerraTripperPluginContent() {
         });
       }
 
-      /* —— NOVO: liga o fim do dia i ao início do dia i+1 —— */
+      /* —— liga o fim do dia i ao início do dia i+1 —— */
       for (let i = 0; i < ordered.length - 1; i++) {
         const dayA = ordered[i];
         const dayB = ordered[i + 1];
@@ -419,7 +431,12 @@ function TerraTripperPluginContent() {
         <div className="text-red-500 font-bold">Erro: GoBackButton não está disponível</div>
       )}
 
-      <h2 className="text-xl font-bold">Planejador de Roteiro de Viagem</h2>
+      <h2 className="text-xl font-bold">
+        Planejador de Roteiro de Viagem{' '}
+        <span className="text-xs text-gray-500">
+          (API direções v{directionsAPIVersion})
+        </span>
+      </h2>
 
       <RoteiroForm onSubmit={handleSubmit} />
 
@@ -454,7 +471,7 @@ function TerraTripperPluginContent() {
                 pontosDisponiveis={disponiveis}
                 baseCatalog={baseCatalog}
                 onUpdateDisponiveis={setDisponiveis}
-                onRebuildRoutes={recomputeRoutes}   // agora só em interações do usuário
+                onRebuildRoutes={recomputeRoutes}
               />
 
               <div className="mt-4">

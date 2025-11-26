@@ -106,7 +106,10 @@ app.get("/plugins/:pluginId/main.js", (req, res) => {
     let tsxContent = fs.readFileSync(pluginFilePath, "utf-8");
 
     // 🔹 Remove imports padrão (React, etc)
-    tsxContent = tsxContent.replace(/^import\s.+from\s+['"](@|react|[^.\/]).+['"];/gm, "");
+    tsxContent = tsxContent.replace(
+      /^import\s.+from\s+['"](@|react|[^.\/]).+['"];/gm,
+      ""
+    );
 
     // 🔹 Evita redefinições de variáveis injetadas
     const dependencyKeys = [
@@ -127,7 +130,22 @@ app.get("/plugins/:pluginId/main.js", (req, res) => {
 
     // 🔹 Injeta dependências globais
     const injectDependencies = `
-      const { React, ReactIcons, GoBackButton, SimpleButton, useMenu } = window.PluginDependencies;
+      const {
+        React,
+        ReactIcons,
+        GoBackButton,
+        SimpleButton,
+        useMenu,
+        useDirections,
+        useLayer,
+        usePin,
+        FullCalendar,
+        fcTimeGrid,
+        fcInteraction,
+        fcScrollGrid,
+        FullCalendarDraggable,
+        fcLocalePtBr,
+      } = window.PluginDependencies;
     `;
 
     // 🔹 Garante exportação default
@@ -141,8 +159,8 @@ app.get("/plugins/:pluginId/main.js", (req, res) => {
     // 🔹 Transpila via Babel com suporte a JSX/TSX e import relativo
     const result = babel.transformSync(wrappedCode, {
       presets: ["@babel/preset-react", "@babel/preset-typescript"],
-      filename: pluginFilePath,  // 🔸 necessário para resolver paths relativos
-      cwd: pluginDir             // 🔸 garante base correta para import "./components"
+      filename: pluginFilePath, // 🔸 necessário para resolver paths relativos
+      cwd: pluginDir, // 🔸 garante base correta para import "./components"
     });
 
     res.setHeader("Content-Type", "application/javascript");
@@ -158,7 +176,12 @@ app.get("/plugins/:pluginId/components/:fileName", (req, res) => {
 
   // Permitir importações do tipo './components/BlocoResumo.js' mesmo que o arquivo seja .tsx
   const baseName = fileName.replace(/\.js$/, "");
-  const tsxFilePath = path.join(pluginsDir, pluginId, "components", `${baseName}.tsx`);
+  const tsxFilePath = path.join(
+    pluginsDir,
+    pluginId,
+    "components",
+    `${baseName}.tsx`
+  );
 
   if (!fs.existsSync(tsxFilePath)) {
     return res.status(404).send("Componente não encontrado.");
@@ -177,6 +200,15 @@ app.get("/plugins/:pluginId/components/:fileName", (req, res) => {
       "GoBackButton",
       "SimpleButton",
       "useMenu",
+      "useDirections",
+      "useLayer",
+      "usePin",
+      "FullCalendar",
+      "fcTimeGrid",
+      "fcInteraction",
+      "fcScrollGrid",
+      "FullCalendarDraggable",
+      "fcLocalePtBr",
     ];
     dependencyKeys.forEach((dep) => {
       const regex = new RegExp(
@@ -187,7 +219,24 @@ app.get("/plugins/:pluginId/components/:fileName", (req, res) => {
     });
 
     // Injeta dependências globais
-    const inject = `const { React, ReactIcons, GoBackButton, SimpleButton, useMenu } = window.PluginDependencies;`;
+    const inject = `
+      const {
+        React,
+        ReactIcons,
+        GoBackButton,
+        SimpleButton,
+        useMenu,
+        useDirections,
+        useLayer,
+        usePin,
+        FullCalendar,
+        fcTimeGrid,
+        fcInteraction,
+        fcScrollGrid,
+        FullCalendarDraggable,
+        fcLocalePtBr,
+      } = window.PluginDependencies;
+    `;
 
     const wrapped = `${inject}\n${code}`;
 
@@ -203,8 +252,6 @@ app.get("/plugins/:pluginId/components/:fileName", (req, res) => {
     res.status(500).send("Erro ao compilar componente.");
   }
 });
-
-
 
 //start na api-plugin
 app.listen(PORT, () => {

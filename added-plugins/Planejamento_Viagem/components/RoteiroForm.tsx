@@ -1,10 +1,13 @@
-/** @jsx _R.createElement */
-/** @jsxFrag _R.Fragment */
+/** @jsx React.createElement */
+/** @jsxFrag React.Fragment */
 /** @jsxRuntime classic */
 /* eslint-disable @typescript-eslint/no-explicit-any */
+/* @ts-nocheck */
+
+// React vem injetado pelo host:
+// const { React, ReactIcons, GoBackButton, SimpleButton, useMenu } = window.PluginDependencies;
 
 const _PD: any = (window as any).PluginDependencies || {};
-const _R: typeof import('react') = _PD.React;
 
 // Expostos pelo host
 const PluginMapInput = _PD.PluginMapInput;
@@ -34,6 +37,7 @@ type PointResult = {
   tipo?: 'base' | 'interesse';
   tempo?: number;
 };
+
 type Roteiro = {
   dataIda: string;
   dataVolta: string;
@@ -41,12 +45,15 @@ type Roteiro = {
   tempo: number;
   pontos: PointResult[];
 };
+
 type Props = { onSubmit: (r: Roteiro) => void };
 
-/** Aplica imediatamente o estilo do pin (sem mostrar quadrado/bolinha cinza).
- *  1) tenta atualizar via hook do host (updatePin) — quando existir,
- *  2) força via pinService.setPinStyle (TR_BASE/TR_POI + cor neutra),
- *  3) remove seletores cinza que o OL às vezes deixa no mapa. */
+/**
+ * Aplica imediatamente o estilo do pin (sem mostrar quadrado/bolinha cinza).
+ * 1) tenta atualizar via hook do host (updatePin), quando existir;
+ * 2) força via pinService.setPinStyle (TR_BASE/TR_POI + cor neutra);
+ * 3) remove seletores cinza que o OL às vezes deixa no mapa.
+ */
 function restylePin(pinHook: any, id: string, kind: 'base' | 'poi') {
   const wantType = kind === 'base' ? TR_BASE_TYPE : TR_POI_TYPE;
 
@@ -96,22 +103,22 @@ function normalizeLabel(p: Partial<PointResult>): string {
 
 export function RoteiroForm({ onSubmit }: Props) {
   // hook do host (se disponível) deve ser chamado dentro do componente
-  const pinHook = _PD.usePin ? _PD.usePin() : null;
+  const pinHook = typeof _PD.usePin === 'function' ? _PD.usePin() : null;
 
-  const [dataIda, setDataIda] = _R.useState('');
-  const [dataVolta, setDataVolta] = _R.useState('');
-  const [interesses, setInteresses] = _R.useState('');
-  const [tempo, setTempo] = _R.useState(1);
+  const [dataIda, setDataIda]         = React.useState('');
+  const [dataVolta, setDataVolta]     = React.useState('');
+  const [interesses, setInteresses]   = React.useState('');
+  const [tempo, setTempo]             = React.useState(1);
 
   // Começamos com ORIGEM (base), 1 parada (interesse) e DESTINO (base)
-  const [pontos, setPontos] = _R.useState<PointResult[]>([
+  const [pontos, setPontos] = React.useState<PointResult[]>([
     { uid: generateUid(), tipo: 'base' },
     { uid: generateUid(), tipo: 'interesse', tempo: 60 },
     { uid: generateUid(), tipo: 'base' },
   ]);
 
   // limpa seletores cinza que porventura existam no carregamento do form
-  _R.useEffect(() => {
+  React.useEffect(() => {
     try { pinService.hideSelectorsNow?.(); } catch {}
   }, []);
 

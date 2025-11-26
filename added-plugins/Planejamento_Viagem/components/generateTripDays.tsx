@@ -1,3 +1,8 @@
+/* eslint-disable */
+/* @ts-nocheck */
+
+// components/plan/generateTripDays.ts
+
 export function generateTripDays(dataIda: string, dataVolta: string): string[] {
   const dias: string[] = [];
 
@@ -9,7 +14,7 @@ export function generateTripDays(dataIda: string, dataVolta: string): string[] {
   }
 
   while (atual <= fim) {
-    dias.push(atual.toISOString().split("T")[0]); // formato "YYYY-MM-DD"
+    dias.push(atual.toISOString().split("T")[0]); // "YYYY-MM-DD"
     atual.setDate(atual.getDate() + 1);
   }
 
