@@ -9,16 +9,22 @@ const __PD: any = (window as any).PluginDependencies || {};
 const _R: typeof import('react') = __PD.React;
 
 /* UI/Serviços expostos pelo host (com prefixo para evitar colisões) */
-const TT_GoBackButton     = __PD.GoBackButton;
-const TT_useMenu          = __PD.useMenu;
-const TT_Direction        = __PD.Direction;
+const TT_GoBackButton = __PD.GoBackButton;
+const TT_useMenu = __PD.useMenu;
 const TT_directionService = __PD.directionService;
-const TT_pinService       = __PD.pinService;
+const TT_pinService = __PD.pinService;
 
-// Hook versionado de direções (contrato IUseDirectionsHook)
-const TT_useDirections    = __PD.useDirections;
+// Hooks/serviços via CONTRATO
+const TT_useDirections = __PD.useDirections;
+const TT_useRouteProfile = __PD.useRouteProfile;
+const TT_useRange = __PD.useRange;
+const TT_useRadius = __PD.useRadius;
 
+// Ícones
 const { MdOutlineMap: TT_MdOutlineMap } = (__PD.ReactIcons?.md ?? {}) as any;
+
+// Metadados globais de contratos (preenchidos pelo host)
+const __PI: any = (window as any).PluginInterfaces || {};
 
 /* Componentes do plugin */
 import { RoteiroForm } from './components/RoteiroForm';
@@ -27,18 +33,30 @@ import { TravelPlannerBoard } from './components/TravelPlannerBoard';
 import { generateInitialBoard } from './components/generateInitialBoard';
 import { convertToDiaRoteiro } from './components/convertToDiaRoteiro';
 
-/* ========= Paleta por dia ========= (RGBA) */
-const DAY_COLORS: number[][] = [
-  [ 59, 130, 246, 0.95 ], // azul
-  [ 16, 185, 129, 0.95 ], // esmeralda
-  [234, 179,   8, 0.95 ], // amarelo
-  [244,  63,  94, 0.95 ], // rose
-  [139,  92, 246, 0.95 ], // violeta
-  [245, 158,  11, 0.95 ], // amber
-  [ 34, 197,  94, 0.95 ], // green
-  [239,  68,  68, 0.95 ], // red
+/* ========= Paleta por dia ========= (15 cores, sem vermelho) */
+const TT_PALETTE_15 = [
+  '#0ea5e9', '#22c55e', '#f59e0b', '#6366f1', '#14b8a6',
+  '#a855f7', '#10b981', '#84cc16', '#06b6d4', '#f97316',
+  '#3b82f6', '#8b5cf6', '#2dd4bf', '#65a30d', '#0891b2',
 ];
+
+function ttHexToRgb(hex: string): [number, number, number] {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return [0, 0, 0];
+  return [
+    parseInt(m[1], 16),
+    parseInt(m[2], 16),
+    parseInt(m[3], 16),
+  ];
+}
+
+const DAY_COLORS: number[][] = TT_PALETTE_15.map((hex) => {
+  const [r, g, b] = ttHexToRgb(hex);
+  return [r, g, b, 0.95];   // alpha ~95%
+});
+
 const colorForDay = (i: number) => DAY_COLORS[i % DAY_COLORS.length];
+
 const rgbaToHex = ([r, g, b]: number[]) =>
   `#${[r, g, b]
     .map(v =>
@@ -62,6 +80,7 @@ function idForMapPin(
     `${point.coordinates?.[0]},${point.coordinates?.[1]}`;
   return `pin::${date ?? 'nodate'}::${dayIndex}::${kind ?? 'poi'}::${base}`;
 }
+
 function isBaseId(id?: string) {
   if (!id) return false;
   return (
@@ -70,24 +89,24 @@ function isBaseId(id?: string) {
     id.startsWith('__base_of_')
   );
 }
+
 function orderedDaysForRouting(board: any[]) {
-  return (board || []).map(d => {
-    const start = (d?.pontos || []).find(
-      (p: any) => String(p?.id) === `base-start-${d?.data}`,
+  return (board || []).map((d) => {
+    // usa a ordem EXATA do board, apenas filtrando quem não tem coordenadas válidas
+    const pts = (d?.pontos || []).filter(
+      (p: any) =>
+        p &&
+        Array.isArray(p.coordinates) &&
+        p.coordinates.length === 2
     );
-    const end = (d?.pontos || []).find(
-      (p: any) => String(p?.id) === `base-end-${d?.data}`,
-    );
-    const pois = (d?.pontos || []).filter(
-      (p: any) => p?.tipo === 'interesse',
-    );
-    const seq: any[] = [];
-    if (start) seq.push(start);
-    seq.push(...pois);
-    if (end) seq.push(end);
-    return { ...d, pontos: seq.length ? seq : d?.pontos || [] };
+
+    return {
+      ...d,
+      pontos: pts,
+    };
   });
 }
+
 function boardSignature(board: any[]): string {
   return (board || [])
     .map(d => {
@@ -101,6 +120,30 @@ function boardSignature(board: any[]): string {
       return `${d?.data ?? ''}::${pairs.join('|')}`;
     })
     .join('||');
+}
+
+function toDirectionPointFromPluginPoint(point: any) {
+  if (
+    !point ||
+    !Array.isArray(point.coordinates) ||
+    point.coordinates.length !== 2
+  ) {
+    return null;
+  }
+
+  const [lon, lat] = point.coordinates;
+
+  const baseLabel =
+    point.label ||
+    [point.name, point.city, point.uf].filter(Boolean).join(', ') ||
+    `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+
+  return {
+    id: String(point.id ?? point.uid ?? baseLabel),
+    name: String(point.name ?? baseLabel),
+    uf: point.uf ?? '',
+    coordinates: point.coordinates,
+  };
 }
 
 /* ========= Pins ========= */
@@ -126,6 +169,7 @@ async function replaceAllPins(features: any[]) {
     console.warn('[TerraTripper] Falha ao atualizar pins:', e);
   }
 }
+
 function buildPinsFromBoard(board: any[]) {
   const pins: any[] = [];
   for (let dayIndex = 0; dayIndex < board.length; dayIndex++) {
@@ -159,6 +203,25 @@ function buildPinsFromBoard(board: any[]) {
   return pins;
 }
 
+/* ========= Catálogo de deps usadas (quase automático) ========= */
+const RAW_DEPENDENCY_LABELS: Record<string, string> = {
+  useDirections: 'useDirections (rotas)',
+  useRouteProfile: 'useRouteProfile (perfil de rota)',
+  useRange: 'useRange (isócronas)',
+  useRadius: 'useRadius (raios)',
+  pinService: 'pinService (pins no mapa)',
+  directionService: 'directionService (direções legado)',
+};
+
+const RAW_DEPENDENCIES: Record<string, () => any> = {
+  useDirections: () => TT_useDirections,
+  useRouteProfile: () => TT_useRouteProfile,
+  useRange: () => TT_useRange,
+  useRadius: () => TT_useRadius,
+  pinService: () => TT_pinService,
+  directionService: () => TT_directionService,
+};
+
 /* ========= Componente principal ========= */
 function TerraTripperPluginContent() {
   const { changeMenuOption } = TT_useMenu();
@@ -168,77 +231,112 @@ function TerraTripperPluginContent() {
   const {
     addDirection: addDirectionAPI,
     clearSource: clearDirectionsSourceAPI,
-    // extras disponíveis se precisar
-    removeDirection: removeDirectionAPI,
     saveDirection: saveDirectionAPI,
     renderDirections: renderDirectionsAPI,
-    updateDirection: updateDirectionAPI,
-    updateAllDirections: updateAllDirectionsAPI,
-    getDirectionById: getDirectionByIdAPI,
-    getDirections: getDirectionsAPI,
   } = directionsAPI || {};
 
+  // Perfil de rota (driving-car, etc) via contrato
+  const routeProfile = TT_useRouteProfile
+    ? TT_useRouteProfile()
+    : { profile: 'driving-car', changeProfile: () => {} };
+
+  // API de ranges (isócronas) via contrato
+  const rangeAPI = TT_useRange ? TT_useRange() : ({} as any);
+  const {
+    addRange,
+    saveRange,
+    renderRanges,
+    fetchRange,     // do contrato
+    clearSource: clearRangeSource,
+  } = rangeAPI || {};
+
+  // API de raios (geometria simples) via contrato
+  const radiusAPI = TT_useRadius ? TT_useRadius() : ({} as any);
+  const {
+    addRadius: addRadiusFeature,
+    clearSource: clearRadiusSource,
+  } = radiusAPI || {};
+
   const [formRoteiro, setFormRoteiro] = _R.useState<any>(null);
-  const [directions, setDirections]   = _R.useState<any[]>([]);
-  const [board, setBoard]             = _R.useState<any[]>([]);
+  const [directions, setDirections] = _R.useState<any[]>([]);
+  const [board, setBoard] = _R.useState<any[]>([]);
   const [disponiveis, setDisponiveis] = _R.useState<any[]>([]);
-  const [mostrarQuadro, setMostrar]   = _R.useState(false);
-  const [hover, setHover]             = _R.useState(false);
-  const [showDeps, setShowDeps]       = _R.useState(false);
+  const [mostrarQuadro, setMostrar] = _R.useState(false);
+  const [hover, setHover] = _R.useState(false);
+
+  const [rangesLoading, setRangesLoading] = _R.useState(false);
+  const [rangesError, setRangesError] = _R.useState<string | null>(null);
+
+  const [radiusLoading, setRadiusLoading] = _R.useState(false);
+  const [radiusError, setRadiusError] = _R.useState<string | null>(null);
+
+  const [showDeps, setShowDeps] = _R.useState(false);
+
+  const [routesSaving, setRoutesSaving] = _R.useState(false);
+  const [routesSaveMessage, setRoutesSaveMessage] = _R.useState<string | null>(
+    null,
+  );
 
   const recomputeLockRef = _R.useRef(false);
-  const queuedBoardRef   = _R.useRef<any[] | null>(null);
-  const lastSigRef       = _R.useRef<string>('');
-  const tokenRef         = _R.useRef(0);
+  const queuedBoardRef = _R.useRef<any[] | null>(null);
+  const lastSigRef = _R.useRef<string>('');
+  const tokenRef = _R.useRef(0);
 
-  // ==== versões/metadados das deps QUE ESTE PLUGIN USA ====
-  const depsInfo = _R.useMemo(() => {
-    const PD = __PD;
-    const PI = (window as any).PluginInterfaces || {};
-    const out: any[] = [];
-
-    function resolveVersion(key: string, value: any): string {
-      if (!value) return '';
-      // se for um hook versionado (tem método version)
-      if (typeof value?.version === 'function') {
-        try {
-          return value.version();
-        } catch {
-          return '';
-        }
-      }
-      // se o pluginInterfaces tiver algo registrado
-      if (PI[key]?.version) {
-        return String(PI[key].version);
-      }
-      return '';
-    }
-
-    function push(key: string, label: string, kind: 'hook'|'service'|'ui'|'controller') {
-      const value   = PD[key];
-      if (!value) return;
-      const version = resolveVersion(key, value);
-      out.push({ key, label, kind, version });
-    }
-
-    // Somente o que o TerraTripper de fato usa neste arquivo:
-    push('useDirections',        'API de direções (useDirections)',  'hook');
-    push('directionService',     'Serviço de rotas (directionService)', 'service');
-    push('pinService',           'Serviço de pins (pinService)',     'service');
-    push('fetchDirectionsController', 'Controller HTTP de rotas (fetchDirectionsController)', 'controller');
-    push('useMenu',              'Contexto de menu (useMenu)',       'hook');
-    push('GoBackButton',         'Componente GoBackButton',          'ui');
-
-    return out;
-  }, []);
-
-  // versão da API de direções (para mostrar igual antigamente)
+  // versões vindas dos próprios hooks (para título)
   const directionsAPIVersion =
     typeof TT_useDirections?.version === 'function'
       ? TT_useDirections.version()
       : 'hook';
 
   (window as any).TT_DIRECTIONS_API_VERSION = directionsAPIVersion;
+
+  // Lista de dependências realmente usadas
+  const depsUsed = _R.useMemo(() => {
+    const pi: any = __PI || {};
+    const list: {
+      id: string;
+      label: string;
+      kind: string;
+      version: string;
+      description?: string;
+    }[] = [];
+
+    for (const key of Object.keys(RAW_DEPENDENCIES)) {
+      const getter = RAW_DEPENDENCIES[key];
+      if (typeof getter !== 'function') continue;
+      const value = getter();
+      if (!value) continue;
+
+      const meta = pi[key] || {};
+      const versionFromMeta = meta.version;
+      const versionFromFn =
+        typeof value?.version === 'function' ? value.version() : undefined;
+
+      const version =
+        versionFromMeta ||
+        versionFromFn ||
+        (key.startsWith('use') ? 'hook' : 'host');
+
+      const label =
+        meta.name ||
+        RAW_DEPENDENCY_LABELS[key] ||
+        key;
+
+      const kind =
+        meta.kind ||
+        (key.startsWith('use') ? 'hook' : 'service');
+
+      list.push({
+        id: key,
+        label,
+        kind,
+        version,
+        description: meta.description,
+      });
+    }
+
+    return list.sort((a, b) => a.label.localeCompare(b.label));
+  }, []);
 
   /* ==== Redraw “de segurança” quando o quadro abre ==== */
   _R.useEffect(() => {
@@ -257,7 +355,6 @@ function TerraTripperPluginContent() {
         await clearDirectionsSourceAPI();
         return;
       }
-
       let any = false;
       if (TT_directionService?.clear) {
         await TT_directionService.clear();
@@ -299,20 +396,28 @@ function TerraTripperPluginContent() {
     colorHex: string;
     colorIndex: number;
   }) {
+    // Garantimos que há coordenadas
     if (!origin?.coordinates || !destination?.coordinates) return null;
+
     const [ol, oa] = origin.coordinates || [];
     const [dl, da] = destination.coordinates || [];
     if (ol === dl && oa === da) return null;
+
+    // Convertemos para o tipo DirectionPoint do contrato,
+    // garantindo "name" e "id"
+    const originDP = toDirectionPointFromPluginPoint(origin);
+    const destinationDP = toDirectionPointFromPluginPoint(destination);
+
+    if (!originDP || !destinationDP) return null;
 
     let result: any = null;
 
     try {
       if (__PD.fetchDirectionsController) {
-        // usa o controller HTTP do host (segue IFetchDirectionsController)
         result = await __PD.fetchDirectionsController.execute({
-          origin,
-          destination,
-          profile: 'driving-car',
+          origin: originDP,
+          destination: destinationDP,
+          profile: routeProfile?.profile ?? 'driving-car',
           preference: 'recommended',
           options: {
             avoidBorders: 'none',
@@ -328,19 +433,17 @@ function TerraTripperPluginContent() {
       }
 
       const props: any = result?.geojson?.properties ?? {};
-      props.color      = colorRGBA;
-      props.colorHex   = colorHex;
+      props.color = colorRGBA;
+      props.colorHex = colorHex;
       props.colorIndex = colorIndex;
       result.geojson.properties = props;
 
-      // desenha no mapa via hook (contrato); se não existir, usa o serviço legado
       if (typeof addDirectionAPI === 'function') {
         await addDirectionAPI(result);
       } else if (TT_directionService?.addDirection) {
         await TT_directionService.addDirection(result);
       }
 
-      // tenta aplicar ajustes extras se o serviço legado tiver isso
       try {
         result.setStrokeColor?.(colorHex);
         TT_directionService?.updateDirectionStyle?.(result.id, {
@@ -362,7 +465,6 @@ function TerraTripperPluginContent() {
     async (novoBoard: any[]) => {
       const sig = boardSignature(novoBoard);
       if (sig === lastSigRef.current) return;
-
       if (recomputeLockRef.current) {
         queuedBoardRef.current = novoBoard;
         return;
@@ -549,11 +651,300 @@ function TerraTripperPluginContent() {
     [directions],
   );
 
+  /* ==================== Isócronas nas bases (via contrato, sem hook dentro) ==================== */
+   /* ==================== Isócronas nas bases (via contrato, sem hook dentro) ==================== */
+  async function drawRangesForBases() {
+    console.log('[TerraTripper] drawRangesForBases clicado');
+    setRangesError(null);
+
+    if (!board || !board.length) {
+      setRangesError('Nenhum roteiro calculado ainda.');
+      return;
+    }
+
+    if (!fetchRange || !addRange) {
+      console.warn(
+        '[TerraTripper] useRange.fetchRange ou addRange não disponível no hook.',
+      );
+      setRangesError(
+        'API de isócrona (useRange.fetchRange) não está disponível neste ambiente.',
+      );
+      return;
+    }
+
+    try {
+      setRangesLoading(true);
+
+      // Opcional: limpar ranges existentes
+      if (typeof clearRangeSource === 'function') {
+        console.log('[TerraTripper] Limpando ranges anteriores com clearSource()');
+        await clearRangeSource();
+      }
+
+      // ========= 1) Coletar bases únicas (por coordenada) =========
+      type UniqueBase = {
+        base: any;
+        diaData?: string;
+        dayIndex: number;
+        colorHex: string;
+        colorRGBA: [number, number, number, number];
+      };
+
+      const uniqueBases: UniqueBase[] = [];
+      const seenCoords = new Set<string>();
+
+      board.forEach((dia, dayIndex) => {
+        const bases = (dia?.pontos || []).filter(
+          (p: any) => p?.tipo === 'base',
+        );
+
+        const rgba = colorForDay(dayIndex) as [
+          number,
+          number,
+          number,
+          number
+        ];
+        const hex = rgbaToHex(rgba);
+
+        for (const base of bases) {
+          if (
+            !Array.isArray(base.coordinates) ||
+            base.coordinates.length !== 2
+          ) {
+            console.warn('[TerraTripper] Base sem coordenadas válidas:', base);
+            continue;
+          }
+
+          const coordKey = `${base.coordinates[0]},${base.coordinates[1]}`;
+          if (seenCoords.has(coordKey)) continue;
+          seenCoords.add(coordKey);
+
+          uniqueBases.push({
+            base,
+            diaData: dia?.data,
+            dayIndex,
+            colorHex: hex,
+            colorRGBA: rgba,
+          });
+        }
+      });
+
+      console.log('[TerraTripper] Bases únicas para isócronas:', uniqueBases);
+
+      if (!uniqueBases.length) {
+        setRangesError('Nenhuma base com coordenadas válidas encontrada no roteiro.');
+        return;
+      }
+
+      // ========= 2) Gerar isócrona para cada base única =========
+      for (const { base, diaData, dayIndex, colorHex, colorRGBA } of uniqueBases) {
+        const place = {
+          id: base.id || base.uid || `base-${diaData || ''}`,
+          name: base.label || base.name || 'Base',
+          uf: base.uf || '',
+          coordinates: base.coordinates, // [lon, lat]
+        };
+
+        const profile = routeProfile?.profile ?? 'driving-car';
+
+        const params = {
+          place,
+          range: 30,        // 30 minutos
+          interval: 10,     // 10 / 20 / 30
+          maxRange: 30,
+          rangeType: 'time',
+          profile,
+          options: {
+            avoidBorders: 'none',
+            avoidFeatures: {
+              highways: false,
+              tollways: false,
+              ferries: false,
+            },
+          },
+          previousRange: undefined,
+        };
+
+        console.log('[TerraTripper] Chamando fetchRange com params:', params);
+        const range = await fetchRange(params);
+        console.log('[TerraTripper] Range recebido:', range);
+
+        // ===== injetar cor da PALETA DO DIA em todos os lugares possíveis =====
+        try {
+          // topo do objeto
+          (range as any).colorHex = colorHex;
+          (range as any).colorRGBA = colorRGBA;
+          (range as any).dayIndex = dayIndex;
+          (range as any).color = colorHex;
+          (range as any).fillColor = colorHex;
+          (range as any).strokeColor = colorHex;
+          (range as any).outlineColor = colorHex;
+          (range as any).style = {
+            ...(range as any).style,
+            color: colorHex,
+            outlineColor: colorHex,
+            fillColor: colorHex,
+            strokeColor: colorHex,
+            fillOpacity: 0.15,
+          };
+
+          // dentro do geojson
+          if (range?.geojson?.features && Array.isArray(range.geojson.features)) {
+            range.geojson.features = range.geojson.features.map((f: any) => {
+              const prevProps = f.properties || {};
+              const props = {
+                ...prevProps,
+                color: colorHex,
+                colorHex,
+                colorRGBA,
+                outlineColor: colorHex,
+                strokeColor: colorHex,
+                fillColor: colorHex,
+                fillOpacity:
+                  typeof prevProps.fillOpacity === 'number'
+                    ? prevProps.fillOpacity
+                    : 0.15,
+                dayIndex,
+                origem: 'TerraTripper',
+              };
+              return {
+                ...f,
+                properties: props,
+              };
+            });
+          }
+        } catch (e) {
+          console.warn('[TerraTripper] Falha ao injetar cor nas isócronas:', e);
+        }
+
+        await addRange(range);
+        if (typeof saveRange === 'function') {
+          await saveRange(range);
+        }
+      }
+
+      if (typeof renderRanges === 'function') {
+        console.log('[TerraTripper] Chamando renderRanges()');
+        await renderRanges();
+      }
+
+      console.log('[TerraTripper] Isócronas desenhadas com sucesso.');
+    } catch (e: any) {
+      console.warn('Erro ao gerar isócronas das bases via useRange:', e);
+      setRangesError('Falha ao gerar isócronas das bases.');
+    } finally {
+      setRangesLoading(false);
+    }
+  }
+
+  /* ==================== Raios simples nas bases ==================== */
+  async function drawRadiusForBases() {
+    console.log('[TerraTripper] drawRadiusForBases clicado');
+    setRadiusError(null);
+
+    if (!board || !board.length) {
+      setRadiusError('Nenhum roteiro calculado ainda.');
+      return;
+    }
+
+    if (!addRadiusFeature) {
+      console.warn(
+        '[TerraTripper] useRadius / addRadiusFeature não disponível no host.',
+      );
+      setRadiusError('API de raio (useRadius) não está disponível neste ambiente.');
+      return;
+    }
+
+    try {
+      setRadiusLoading(true);
+
+      if (typeof clearRadiusSource === 'function') {
+        await clearRadiusSource();
+      }
+
+      for (const dia of board) {
+        const bases = (dia?.pontos || []).filter((p: any) => p?.tipo === 'base');
+        for (const base of bases) {
+          if (!base?.coordinates || base.coordinates.length !== 2) continue;
+
+          const [lon, lat] = base.coordinates;
+
+          const radiusFeature = {
+            id: `tt-radius-${dia?.data || 'nodate'}-${base.id || lon + '-' + lat}`,
+            name: base.label || base.name || 'Raio da base',
+            center: base.coordinates,
+            geojson: {
+              type: 'FeatureCollection',
+              features: [
+                {
+                  type: 'Feature',
+                  geometry: {
+                    type: 'Point',
+                    coordinates: base.coordinates,
+                  },
+                  properties: {
+                    radius_km: 10,
+                    origem: 'TerraTripper',
+                    day: dia?.data,
+                  },
+                },
+              ],
+            },
+          };
+
+          await addRadiusFeature(radiusFeature);
+        }
+      }
+    } catch (e: any) {
+      console.warn('Erro ao desenhar raios das bases:', e);
+      setRadiusError('Falha ao desenhar raios das bases.');
+    } finally {
+      setRadiusLoading(false);
+    }
+  }
+
+  /* ==================== Salvar itinerário em Rotas ==================== */
+  async function saveItineraryToRoutes() {
+    setRoutesSaveMessage(null);
+
+    if (!directions || !directions.length) {
+      setRoutesSaveMessage('Nenhuma rota calculada para salvar.');
+      return;
+    }
+
+    if (!saveDirectionAPI) {
+      console.warn('[TerraTripper] saveDirection não disponível em useDirections.');
+      setRoutesSaveMessage(
+        'API de salvar rota (useDirections.saveDirection) não está disponível.',
+      );
+      return;
+    }
+
+    try {
+      setRoutesSaving(true);
+
+      for (const dir of directions) {
+        await saveDirectionAPI(dir);
+      }
+
+      if (typeof renderDirectionsAPI === 'function') {
+        await renderDirectionsAPI();
+      }
+
+      setRoutesSaveMessage('Itinerário salvo em "Rotas" com sucesso.');
+    } catch (e) {
+      console.warn('Erro ao salvar itinerário em Rotas:', e);
+      setRoutesSaveMessage('Falha ao salvar itinerário em "Rotas".');
+    } finally {
+      setRoutesSaving(false);
+    }
+  }
+
   /* ==================== Submit inicial (Form) ==================== */
   async function handleSubmit(formData: any) {
     setFormRoteiro(formData);
+    setRoutesSaveMessage(null);
 
-    // preview neutro (cinza) entre os pontos do formulário
     try {
       if (formData?.pontos?.length >= 2) {
         await clearAllRoutes(directions);
@@ -562,7 +953,7 @@ function TerraTripperPluginContent() {
         const temp: any[] = [];
         const previewRGBA: [number, number, number, number] = [
           100, 116, 139, 0.95,
-        ]; // slate-500
+        ];
         const previewHex = '#64748b';
 
         for (let i = 0; i < formData.pontos.length - 1; i++) {
@@ -588,9 +979,7 @@ function TerraTripperPluginContent() {
             )
             .map((p: any, idx: number) => ({
               type: 'Feature',
-              id: p?.uid
-                ? `point-${p.uid}`
-                : `point-fallback-${idx}`,
+              id: p?.uid ? `point-${p.uid}` : `point-fallback-${idx}`,
               geometry: {
                 type: 'Point',
                 coordinates: p.coordinates as [number, number],
@@ -609,20 +998,15 @@ function TerraTripperPluginContent() {
       console.warn('Rota inicial (form) falhou:', e);
     }
 
-    // gera Board inicial e já desenha colorido
     try {
       const initialBoard = await generateInitialBoard(formData);
-      const diasRoteiro = convertToDiaRoteiro(
-        initialBoard,
-        formData.pontos,
-      );
+      const diasRoteiro = convertToDiaRoteiro(initialBoard, formData.pontos);
 
       setBoard(diasRoteiro);
       setDisponiveis([]);
 
       await recomputeRoutes(diasRoteiro);
 
-      // se o quadro já estiver aberto, força reaplicar as cores
       setTimeout(() => (window as any).TT_ON_BOARD_OPEN?.(), 50);
     } catch (e) {
       console.error('Erro ao preparar/desenhar rotas iniciais:', e);
@@ -636,6 +1020,7 @@ function TerraTripperPluginContent() {
       `${p?.label}|${p?.coordinates?.[0]},${p?.coordinates?.[1]}`,
     [],
   );
+
   const baseCatalog = _R.useMemo(() => {
     const pts =
       (formRoteiro?.pontos ?? []).filter(
@@ -660,51 +1045,44 @@ function TerraTripperPluginContent() {
         </div>
       )}
 
-      <div className="flex flex-col gap-1">
-        <h2 className="text-xl font-bold">
-          Planejador de Roteiro de Viagem
-        </h2>
+      <h2 className="text-xl font-bold flex items-center gap-2">
+        <span>Planejador de Roteiro de Viagem</span>
 
-        {/* Linha “clássica” + botão de dependências */}
-        <div className="flex flex-col gap-1 text-[11px] text-gray-500">
-          
+        <button
+          type="button"
+          onClick={() => setShowDeps(prev => !prev)}
+          className="ml-auto text-xs px-2 py-1 border rounded-md text-blue-700 border-blue-300 hover:bg-blue-50"
+        >
+          {showDeps ? 'Ocultar dependências' : 'Ver dependências'}
+        </button>
+      </h2>
 
-          <button
-            type="button"
-            onClick={() => setShowDeps(v => !v)}
-            className="self-start text-[11px] text-blue-600 hover:text-blue-800 underline"
-          >
-            {showDeps ? 'Ocultar dependências do TerraPlanner' : 'Ver dependências do TerraPlanner'}
-          </button>
-        </div>
-
-        {/* Lista vertical de dependências, dentro do layout */}
-        {showDeps && depsInfo.length > 0 && (
-          <div className="mt-1 border border-gray-200 rounded-md p-2 bg-gray-50 text-[11px] text-gray-700 max-h-40 overflow-auto">
-            {depsInfo.map(dep => {
-              const versionLabel =
-                dep.version && dep.version !== ''
-                  ? `v${dep.version}`
-                  : 'sem versão exposta';
-              return (
-                <div key={dep.key} className="leading-snug mb-1 last:mb-0">
-                  <span className="font-semibold">{dep.label}</span>{' '}
-                  <span>— {versionLabel}</span>
-                </div>
-              );
-            })}
+      {showDeps && depsUsed.length > 0 && (
+        <div className="mt-2 border rounded-md bg-gray-50 p-3 text-xs text-gray-700 max-w-md">
+          <div className="font-semibold mb-1">
+            APIs do TerraPlanner utilizadas por este plugin
           </div>
-        )}
-      </div>
+          <ul className="list-disc pl-4 space-y-1">
+            {depsUsed.map(dep => (
+              <li key={dep.id}>
+                <strong>{dep.label}</strong>
+                {dep.kind && ` (${dep.kind})`} — v{dep.version}
+                {dep.description && (
+                  <div className="text-[0.7rem] text-gray-500">
+                    {dep.description}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <RoteiroForm onSubmit={handleSubmit} />
 
       {formRoteiro && (
         <>
-          <RoteiroResumo
-            roteiro={formRoteiro}
-            directions={directions}
-          />
+          <RoteiroResumo roteiro={formRoteiro} directions={directions} />
 
           {!mostrarQuadro && (
             <div className="w-full mt-4">
@@ -734,15 +1112,6 @@ function TerraTripperPluginContent() {
                 overflow: 'auto',
               }}
             >
-              {/* botão de fechar no topo direito do quadro */}
-              <button
-                type="button"
-                onClick={() => setMostrar(false)}
-                className="absolute top-2 right-3 text-gray-400 hover:text-gray-600 text-lg leading-none"
-              >
-                ×
-              </button>
-
               <TravelPlannerBoard
                 roteiro={board}
                 onUpdateRoteiro={setBoard}
@@ -752,7 +1121,55 @@ function TerraTripperPluginContent() {
                 onRebuildRoutes={recomputeRoutes}
               />
 
-              <div className="mt-4">
+              {rangesError && (
+                <div className="mt-3 text-sm text-red-600">
+                  {rangesError}
+                </div>
+              )}
+
+              {radiusError && (
+                <div className="mt-1 text-sm text-red-600">
+                  {radiusError}
+                </div>
+              )}
+
+              {routesSaveMessage && (
+                <div className="mt-2 text-sm text-gray-700">
+                  {routesSaveMessage}
+                </div>
+              )}
+
+              <div className="mt-4 flex gap-3 flex-wrap">
+                <button
+                  onClick={drawRangesForBases}
+                  disabled={rangesLoading}
+                  style={styles.botaoIso}
+                >
+                  {rangesLoading
+                    ? 'Gerando isócronas das bases...'
+                    : 'Desenhar isócronas das bases'}
+                </button>
+
+                <button
+                  onClick={drawRadiusForBases}
+                  disabled={radiusLoading}
+                  style={styles.botaoRaio}
+                >
+                  {radiusLoading
+                    ? 'Desenhando raios das bases...'
+                    : 'Desenhar raios das bases'}
+                </button>
+
+                <button
+                  onClick={saveItineraryToRoutes}
+                  disabled={routesSaving || !directions?.length}
+                  style={styles.botaoSalvar}
+                >
+                  {routesSaving
+                    ? 'Salvando itinerário...'
+                    : 'Salvar itinerário em Rotas'}
+                </button>
+
                 <button
                   onClick={() => setMostrar(false)}
                   style={styles.botaoFechar}
@@ -788,6 +1205,36 @@ const styles = {
   },
   botaoFechar: {
     backgroundColor: '#DC2626',
+    color: 'white',
+    padding: '0.5rem 1rem',
+    fontWeight: 600,
+    borderRadius: '0.5rem',
+    border: 'none',
+    cursor: 'pointer',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+  },
+  botaoIso: {
+    backgroundColor: '#059669',
+    color: 'white',
+    padding: '0.5rem 1rem',
+    fontWeight: 600,
+    borderRadius: '0.5rem',
+    border: 'none',
+    cursor: 'pointer',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+  },
+  botaoRaio: {
+    backgroundColor: '#10B981',
+    color: 'white',
+    padding: '0.5rem 1rem',
+    fontWeight: 600,
+    borderRadius: '0.5rem',
+    border: 'none',
+    cursor: 'pointer',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
+  },
+  botaoSalvar: {
+    backgroundColor: '#4B5563',
     color: 'white',
     padding: '0.5rem 1rem',
     fontWeight: 600,

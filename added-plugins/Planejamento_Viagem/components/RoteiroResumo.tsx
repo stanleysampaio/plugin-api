@@ -9,8 +9,13 @@ const _PD: any = (window as any).PluginDependencies || {};
 const _R: typeof import('react') = _PD.React;
 
 interface PointResult {
+  uid?: string;
   label?: string;
-  coordinates: [number, number]; // [lon, lat]
+  name?: string;
+  city?: string;
+  uf?: string;
+  coordinates?: [number, number]; // [lon, lat]
+  tempo?: number;
 }
 
 interface Direction {
@@ -20,6 +25,10 @@ interface Direction {
       id: string;
       color?: string;
       query?: any;
+      summary?: {
+        distance?: number; // metros
+        duration?: number; // segundos
+      };
     };
   };
 }
@@ -28,6 +37,8 @@ interface Roteiro {
   pontos: PointResult[];
   dataIda: string;
   dataVolta: string;
+  interesses?: string;
+  tempo?: number; // dias
 }
 
 interface Props {
@@ -35,7 +46,7 @@ interface Props {
   directions?: Direction[];
 }
 
-/* ---------- Helpers de distância ---------- */
+/* ---------- Helpers de distância (Haversine) ---------- */
 function haversineMeters(a: [number, number], b: [number, number]): number {
   const R = 6371000;
   const toRad = (deg: number) => (deg * Math.PI) / 180;
@@ -71,9 +82,8 @@ function lineStringLengthMeters(coords: Array<[number, number]>): number {
   return total;
 }
 
-/* ---------- Cores por dia vindas do Board ---------- */
-function getDayColorsLegend():
-  Array<{ day: string; color: string; legs: number }> {
+/* ---------- Cores por dia vindas do Board (TT_VIAGENS) ---------- */
+function getDayColorsLegend(): Array<{ day: string; color: string; legs: number }> {
   const viagens = (window as any).TT_VIAGENS || [];
   return viagens.map((v: any) => ({
     day: v.day,
@@ -82,20 +92,43 @@ function getDayColorsLegend():
   }));
 }
 
+/* ---------- Helpers de formatação ---------- */
+function formatDate(dateStr?: string) {
+  if (!dateStr) return '-';
+  try {
+    const d = new Date(dateStr);
+    if (Number.isNaN(d.getTime())) return dateStr;
+    return d.toLocaleDateString('pt-BR');
+  } catch {
+    return dateStr;
+  }
+}
+
+function labelFromPoint(p?: PointResult): string {
+  if (!p) return '(sem nome)';
+  if (p.label && p.label.trim()) return p.label.trim();
+
+  const composed = [p.name, p.city, p.uf].filter(Boolean).join(', ');
+  if (composed) return composed;
+
+  if (Array.isArray(p.coordinates) && p.coordinates.length === 2) {
+    const [lon, lat] = p.coordinates;
+    return `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+  }
+
+  return '(sem nome)';
+}
+
+/* ---------- Componente principal ---------- */
 export function RoteiroResumo({ roteiro, directions = [] }: Props) {
-  const total = roteiro.pontos.length;
+  const pontos = roteiro?.pontos ?? [];
+  const total = pontos.length;
 
-  const formatPoint = (ponto?: PointResult): string =>
-    ponto?.label?.trim() ||
-    (Array.isArray(ponto?.coordinates) && ponto.coordinates.length === 2
-      ? ponto.coordinates.join(', ')
-      : '---');
+  const origem = total > 0 ? pontos[0] : undefined;
+  const destino = total > 1 ? pontos[total - 1] : undefined;
+  const paradas = total > 2 ? pontos.slice(1, total - 1) : [];
 
-  const origem = formatPoint(roteiro.pontos[0]);
-  const destino = formatPoint(roteiro.pontos[total - 1]);
-  const paradas = roteiro.pontos.slice(1, total - 1);
-
-  // 1) pela geometria das rotas
+  // 1) Distância usando as rotas retornadas (se tiver)
   const metersFromDirections = directions.reduce((acc, d) => {
     const geom = d?.geojson?.geometry;
     if (geom?.type === 'LineString' && Array.isArray(geom.coordinates)) {
@@ -104,12 +137,12 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
     return acc;
   }, 0);
 
-  // 2) fallback entre os pontos do formulário
+  // 2) Fallback: distância entre os pontos do formulário
   const metersFallback = (() => {
     let sum = 0;
-    for (let i = 0; i < roteiro.pontos.length - 1; i++) {
-      const a = roteiro.pontos[i]?.coordinates as [number, number] | undefined;
-      const b = roteiro.pontos[i + 1]?.coordinates as [number, number] | undefined;
+    for (let i = 0; i < pontos.length - 1; i++) {
+      const a = pontos[i]?.coordinates as [number, number] | undefined;
+      const b = pontos[i + 1]?.coordinates as [number, number] | undefined;
       if (a && b) sum += haversineMeters(a, b);
     }
     return sum;
@@ -117,26 +150,41 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
 
   const totalMeters = metersFromDirections > 0 ? metersFromDirections : metersFallback;
   const totalKm = totalMeters / 1000;
-  const formattedKm = totalKm.toLocaleString('pt-BR', {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
+  const formattedKm =
+    totalKm > 0
+      ? totalKm.toLocaleString('pt-BR', {
+          minimumFractionDigits: 1,
+          maximumFractionDigits: 1,
+        })
+      : '—';
+
+  // tempo de deslocamento (se summary vier preenchido)
+  let totalMin = 0;
+  directions.forEach((d) => {
+    const dur = d?.geojson?.properties?.summary?.duration;
+    if (typeof dur === 'number') {
+      totalMin += dur / 60;
+    }
   });
+  totalMin = Math.round(totalMin);
+  const horas = Math.floor(totalMin / 60);
+  const minutos = totalMin % 60;
 
   const legend = getDayColorsLegend();
 
   return (
-    <section className="mt-4 border-t pt-4 bg-blue-50 p-4 rounded">
-      <h3 className="font-semibold text-lg">Resumo do Roteiro</h3>
-
+    <section className="mt-4 space-y-4">
       {/* Legenda das cores por dia (se existir do board) */}
       {legend.length > 0 && (
-        <div className="mt-3">
-          <div className="text-sm font-medium mb-1">Cores por dia:</div>
+        <div className="bg-white/90 border border-slate-200 rounded-xl p-4 shadow-sm">
+          <h3 className="text-sm font-semibold text-slate-700 mb-2">
+            Cores por dia do roteiro
+          </h3>
           <div className="flex flex-wrap gap-2">
             {legend.map(({ day, color, legs }) => (
               <div
                 key={day}
-                className="flex items-center gap-2 px-2 py-1 rounded border bg-white"
+                className="flex items-center gap-2 px-2 py-1 rounded-lg border bg-slate-50"
                 style={{ borderColor: '#e5e7eb' }}
                 title={`Trechos: ${legs}`}
               >
@@ -151,33 +199,146 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
                     boxShadow: '0 0 0 1px rgba(0,0,0,.08) inset',
                   }}
                 />
-                <span className="text-xs font-semibold">{day}</span>
+                <span className="text-xs font-semibold text-slate-700">
+                  {day}
+                </span>
+                {typeof legs === 'number' && legs > 0 && (
+                  <span className="text-[10px] text-slate-500">
+                    ({legs} trecho{legs > 1 ? 's' : ''})
+                  </span>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      <ul className="list-disc ml-5 mt-3 text-sm space-y-1">
-        <li><strong>Data de Ida:</strong> {roteiro.dataIda}</li>
-        <li><strong>Data de Volta:</strong> {roteiro.dataVolta}</li>
-        <li><strong>Origem:</strong> {origem}</li>
-        <li><strong>Destino:</strong> {destino}</li>
+      {/* Cards principais */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* Card 1 – Datas e resumo geral */}
+        <div className="lg:col-span-1 bg-white/90 border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-slate-700">
+            Resumo da viagem
+          </h3>
 
-        {paradas.length > 0 && (
-          <li>
-            <strong>Paradas:</strong>
-            <ul className="list-circle ml-4 mt-1">
-              {paradas.map((p, index) => (
-                <li key={index}>{formatPoint(p)}</li>
-              ))}
-            </ul>
-          </li>
-        )}
+          <div className="flex flex-col gap-1 text-xs text-slate-600">
+            <div className="flex justify-between">
+              <span className="font-medium">Data de ida:</span>
+              <span>{formatDate(roteiro?.dataIda)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-medium">Data de volta:</span>
+              <span>{formatDate(roteiro?.dataVolta)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="font-medium">Duração planejada:</span>
+              <span>{roteiro?.tempo || 1} dia(s)</span>
+            </div>
+          </div>
 
-        <li><strong>Total de rotas geradas:</strong> {directions.length}</li>
-        <li><strong>Distância total:</strong> {formattedKm} km</li>
-      </ul>
+          {roteiro?.interesses && (
+            <div className="mt-2">
+              <div className="text-[11px] font-semibold text-slate-600 mb-1">
+                Interesses
+              </div>
+              <p className="text-xs text-slate-600 whitespace-pre-line">
+                {roteiro.interesses}
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Card 2 – Distância e tempo estimado de deslocamento */}
+        <div className="lg:col-span-1 bg-white/90 border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-slate-700">
+            Deslocamentos previstos
+          </h3>
+
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="flex flex-col p-2 rounded-lg bg-slate-50">
+              <span className="text-[11px] text-slate-500">
+                Distância total (aprox.)
+              </span>
+              <span className="text-base font-semibold text-slate-800">
+                {formattedKm !== '—' ? `${formattedKm} km` : '—'}
+              </span>
+            </div>
+
+            <div className="flex flex-col p-2 rounded-lg bg-slate-50">
+              <span className="text-[11px] text-slate-500">
+                Tempo em deslocamento
+              </span>
+              <span className="text-base font-semibold text-slate-800">
+                {totalMin > 0
+                  ? horas > 0
+                    ? `${horas}h ${minutos}min`
+                    : `${minutos} min`
+                  : '—'}
+              </span>
+            </div>
+          </div>
+
+          <div className="mt-2 text-[11px] text-slate-500">
+            Total de rotas geradas: <strong>{directions.length}</strong>
+          </div>
+        </div>
+
+        {/* Card 3 – Lista de pontos (itinerário) */}
+        <div className="lg:col-span-1 bg-white/90 border border-slate-200 rounded-xl p-4 shadow-sm flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-slate-700">
+            Itinerário planejado
+          </h3>
+
+          <ol className="text-xs text-slate-700 space-y-2">
+            {origem && (
+              <li className="flex items-start gap-2">
+                <span className="mt-[2px] h-2 w-2 rounded-full bg-emerald-500" />
+                <div>
+                  <div className="font-semibold text-slate-800">
+                    Origem
+                  </div>
+                  <div className="text-[11px] text-slate-600">
+                    {labelFromPoint(origem)}
+                  </div>
+                </div>
+              </li>
+            )}
+
+            {paradas.map((p, idx) => (
+              <li key={p.uid ?? idx} className="flex items-start gap-2">
+                <span className="mt-[2px] h-2 w-2 rounded-full bg-blue-500" />
+                <div>
+                  <div className="font-semibold text-slate-800">
+                    Parada {idx + 1}
+                    {p.tempo ? (
+                      <span className="text-[10px] text-slate-500 ml-1">
+                        ({p.tempo} min)
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="text-[11px] text-slate-600">
+                    {labelFromPoint(p)}
+                  </div>
+                </div>
+              </li>
+            ))}
+
+            {destino && destino !== origem && (
+              <li className="flex items-start gap-2">
+                <span className="mt-[2px] h-2 w-2 rounded-full bg-rose-500" />
+                <div>
+                  <div className="font-semibold text-slate-800">
+                    Destino
+                  </div>
+                  <div className="text-[11px] text-slate-600">
+                    {labelFromPoint(destino)}
+                  </div>
+                </div>
+              </li>
+            )}
+          </ol>
+        </div>
+      </div>
     </section>
   );
 }

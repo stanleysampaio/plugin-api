@@ -167,23 +167,52 @@ const clone = (x) => JSON.parse(JSON.stringify(x));
 const sameCoords = (a, b) =>
   !!a && !!b && a.coordinates?.[0] === b.coordinates?.[0] && a.coordinates?.[1] === b.coordinates?.[1];
 
+/**
+ * Garante que o dia comece em UMA base:
+ * - Se já começa com base-start, só normaliza;
+ * - Senão, pega a primeira base encontrada no dia e move para o topo
+ *   marcando como base-start (sem duplicar).
+ */
 function ensureStartIsBase(d) {
   if (!d.pontos.length) return;
-  if (d.pontos[0]?.tipo !== 'base' || !String(d.pontos[0]?.id||'').startsWith('base-start-')) {
-    const firstBase = d.pontos.find(p => p.tipo === 'base') || d.pontos[0];
-    if (firstBase) {
-      d.pontos.unshift({
-        ...firstBase, tipo:'base', fixo: true, id: `base-start-${d.data}`,
-        tempo: firstBase.tempo ?? BASE_START_MIN, startAtMin: 0
-      });
-    }
-  } else {
+
+  const first = d.pontos[0];
+
+  // já começa numa base-start
+  if (
+    first?.tipo === 'base' &&
+    String(first?.id || '').startsWith('base-start-')
+  ) {
     d.pontos[0] = {
-      ...d.pontos[0], tipo:'base', fixo: true, id: `base-start-${d.data}`,
-      tempo: d.pontos[0].tempo ?? BASE_START_MIN, startAtMin: 0
+      ...first,
+      tipo: 'base',
+      fixo: true,
+      id: `base-start-${d.data}`,
+      tempo: first.tempo ?? BASE_START_MIN,
+      startAtMin: 0,
     };
+    return;
   }
+
+  // acha a primeira base do dia
+  const firstBaseIdx = d.pontos.findIndex((p) => p.tipo === 'base');
+  if (firstBaseIdx === -1) return; // dia sem base (não forçamos nada)
+
+  const baseOrig = d.pontos[firstBaseIdx];
+  const base = {
+    ...baseOrig,
+    tipo: 'base',
+    fixo: true,
+    id: `base-start-${d.data}`,
+    tempo: baseOrig.tempo ?? BASE_START_MIN,
+    startAtMin: 0,
+  };
+
+  // move essa base para o topo (sem duplicar)
+  d.pontos.splice(firstBaseIdx, 1);
+  d.pontos.unshift(base);
 }
+
 function ensureEndIsBase(d) {
   if (!d.pontos.length) return;
 
@@ -453,10 +482,14 @@ function Card({
 
   const bgTint = rgba(dayColor, 0.10);
   const border = dayColor;
+  const isStartBase = isBase && String(item.id || '').startsWith('base-start-');
+  const isEndBase   = isBase && String(item.id || '').startsWith('base-end-');
+  const canDelete   = !isBase || (!isStartBase && !isEndBase);
+
   const labelPrefix =
     isBase
-      ? (item.id?.startsWith('base-start-') ? '🏠 Início — '
-         : item.id?.startsWith('base-end-') ? '🏁 Término — ' : '🏠 ')
+      ? (isStartBase ? '🏠 Início — '
+         : isEndBase ? '🏁 Término — ' : '🏠 ')
       : '📍 ';
 
   return (
@@ -490,8 +523,8 @@ function Card({
         }}
         title={
           isBase
-            ? (item.id?.startsWith('base-start-') ? 'Base (início do dia)'
-              : item.id?.startsWith('base-end-') ? 'Base (término do dia)' : 'Base')
+            ? (isStartBase ? 'Base (início do dia)'
+              : isEndBase ? 'Base (término do dia)' : 'Base')
             : 'Ponto de interesse'
         }
       >
@@ -503,7 +536,7 @@ function Card({
           <span style={{ fontWeight: 700, fontSize: 12, flex: 1 }}>
             {labelPrefix}{item.label}
           </span>
-          {!isBase && (
+          {canDelete && (
             <button
               onClick={(e) => { e.stopPropagation(); onRemove(); }}
               style={{ border: 'none', background: 'transparent', color: '#ef4444', fontWeight: 700, cursor: 'pointer' }}
@@ -722,7 +755,17 @@ export function TravelPlannerBoard({
 
   function removeItem(dayIndex, itemIndex) {
     const next = clone(local);
-    next[dayIndex].pontos.splice(itemIndex, 1);
+
+    const removed = next[dayIndex].pontos.splice(itemIndex, 1)[0];
+
+    // Se for ponto de interesse, volta para lista de disponíveis
+    if (removed && removed.tipo === 'interesse' && typeof onUpdateDisponiveis === 'function') {
+      const current = pontosDisponiveis || [];
+      const exists = current.some((p) => p.id === removed.id);
+      const updated = exists ? current : [...current, removed];
+      onUpdateDisponiveis(updated);
+    }
+
     commit(next);
   }
 
