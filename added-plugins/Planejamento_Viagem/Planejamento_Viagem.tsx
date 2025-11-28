@@ -107,6 +107,7 @@ function orderedDaysForRouting(board: any[]) {
   });
 }
 
+
 function boardSignature(board: any[]): string {
   return (board || [])
     .map(d => {
@@ -221,6 +222,51 @@ const RAW_DEPENDENCIES: Record<string, () => any> = {
   pinService: () => TT_pinService,
   directionService: () => TT_directionService,
 };
+
+/* ========= Helper para colorir isócronas com a cor do dia ========= */
+function recolorRangeWithDayColor(range: any, dayIndex: number) {
+  const baseRGBA = colorForDay(dayIndex) as [number, number, number, number];
+  const [r, g, b] = baseRGBA;
+
+  const applyOnFeatures = (features: any[]) => {
+    if (!Array.isArray(features)) return features;
+    const total = features.length || 1;
+
+    return features.map((feature, idx) => {
+      // anel mais interno = mais opaco, mais externo = mais transparente
+      const factor = (total - idx) / total; // 1, 2/3, 1/3...
+      const alpha = 0.15 + factor * 0.35;   // ~0.5 → 0.15
+
+      const color = [r, g, b, alpha];
+
+      return {
+        ...feature,
+        properties: {
+          ...(feature.properties || {}),
+          color,
+          colorIndex: idx,
+        },
+      };
+    });
+  };
+
+  // Caso seja entidade Range (com .props.features)
+  if (range && Array.isArray(range?.props?.features)) {
+    range.props.features = applyOnFeatures(range.props.features);
+  }
+
+  // Caso venha como RangeProps "puro" (features na raiz)
+  if (range && Array.isArray(range?.features)) {
+    range.features = applyOnFeatures(range.features);
+  }
+
+  // Em último caso, se o hook expuser algo com .geojson.features
+  if (range && range.geojson && Array.isArray(range.geojson.features)) {
+    range.geojson.features = applyOnFeatures(range.geojson.features);
+  }
+
+  return range;
+}
 
 /* ========= Componente principal ========= */
 function TerraTripperPluginContent() {
@@ -652,7 +698,6 @@ function TerraTripperPluginContent() {
   );
 
   /* ==================== Isócronas nas bases (via contrato, sem hook dentro) ==================== */
-   /* ==================== Isócronas nas bases (via contrato, sem hook dentro) ==================== */
   async function drawRangesForBases() {
     console.log('[TerraTripper] drawRangesForBases clicado');
     setRangesError(null);
@@ -675,59 +720,41 @@ function TerraTripperPluginContent() {
     try {
       setRangesLoading(true);
 
-      // Opcional: limpar ranges existentes
+      // limpar ranges existentes
       if (typeof clearRangeSource === 'function') {
         console.log('[TerraTripper] Limpando ranges anteriores com clearSource()');
         await clearRangeSource();
       }
 
-      // ========= 1) Coletar bases únicas (por coordenada) =========
-      type UniqueBase = {
-        base: any;
-        diaData?: string;
-        dayIndex: number;
-        colorHex: string;
-        colorRGBA: [number, number, number, number];
-      };
+      // ========= 1) Coletar bases únicas (já com dayIndex) =========
+      const uniqueBases: Array<{ base: any; diaData?: string; dayIndex: number }> = [];
+      const seenKeys = new Set<string>();
 
-      const uniqueBases: UniqueBase[] = [];
-      const seenCoords = new Set<string>();
-
-      board.forEach((dia, dayIndex) => {
+      for (let dayIndex = 0; dayIndex < board.length; dayIndex++) {
+        const dia = board[dayIndex];
         const bases = (dia?.pontos || []).filter(
           (p: any) => p?.tipo === 'base',
         );
 
-        const rgba = colorForDay(dayIndex) as [
-          number,
-          number,
-          number,
-          number
-        ];
-        const hex = rgbaToHex(rgba);
-
         for (const base of bases) {
-          if (
-            !Array.isArray(base.coordinates) ||
-            base.coordinates.length !== 2
-          ) {
+          if (!Array.isArray(base.coordinates) || base.coordinates.length !== 2) {
             console.warn('[TerraTripper] Base sem coordenadas válidas:', base);
             continue;
           }
 
-          const coordKey = `${base.coordinates[0]},${base.coordinates[1]}`;
-          if (seenCoords.has(coordKey)) continue;
-          seenCoords.add(coordKey);
+          const key =
+            base.id ||
+            base.uid ||
+            base.label ||
+            base.name ||
+            base.coordinates.join(',');
 
-          uniqueBases.push({
-            base,
-            diaData: dia?.data,
-            dayIndex,
-            colorHex: hex,
-            colorRGBA: rgba,
-          });
+          if (seenKeys.has(key)) continue;
+          seenKeys.add(key);
+
+          uniqueBases.push({ base, diaData: dia?.data, dayIndex });
         }
-      });
+      }
 
       console.log('[TerraTripper] Bases únicas para isócronas:', uniqueBases);
 
@@ -737,7 +764,7 @@ function TerraTripperPluginContent() {
       }
 
       // ========= 2) Gerar isócrona para cada base única =========
-      for (const { base, diaData, dayIndex, colorHex, colorRGBA } of uniqueBases) {
+      for (const { base, diaData, dayIndex } of uniqueBases) {
         const place = {
           id: base.id || base.uid || `base-${diaData || ''}`,
           name: base.label || base.name || 'Base',
@@ -766,56 +793,11 @@ function TerraTripperPluginContent() {
         };
 
         console.log('[TerraTripper] Chamando fetchRange com params:', params);
-        const range = await fetchRange(params);
+        let range = await fetchRange(params);
         console.log('[TerraTripper] Range recebido:', range);
 
-        // ===== injetar cor da PALETA DO DIA em todos os lugares possíveis =====
-        try {
-          // topo do objeto
-          (range as any).colorHex = colorHex;
-          (range as any).colorRGBA = colorRGBA;
-          (range as any).dayIndex = dayIndex;
-          (range as any).color = colorHex;
-          (range as any).fillColor = colorHex;
-          (range as any).strokeColor = colorHex;
-          (range as any).outlineColor = colorHex;
-          (range as any).style = {
-            ...(range as any).style,
-            color: colorHex,
-            outlineColor: colorHex,
-            fillColor: colorHex,
-            strokeColor: colorHex,
-            fillOpacity: 0.15,
-          };
-
-          // dentro do geojson
-          if (range?.geojson?.features && Array.isArray(range.geojson.features)) {
-            range.geojson.features = range.geojson.features.map((f: any) => {
-              const prevProps = f.properties || {};
-              const props = {
-                ...prevProps,
-                color: colorHex,
-                colorHex,
-                colorRGBA,
-                outlineColor: colorHex,
-                strokeColor: colorHex,
-                fillColor: colorHex,
-                fillOpacity:
-                  typeof prevProps.fillOpacity === 'number'
-                    ? prevProps.fillOpacity
-                    : 0.15,
-                dayIndex,
-                origem: 'TerraTripper',
-              };
-              return {
-                ...f,
-                properties: props,
-              };
-            });
-          }
-        } catch (e) {
-          console.warn('[TerraTripper] Falha ao injetar cor nas isócronas:', e);
-        }
+        // 💡 AQUI aplicamos a paleta TerraTripper
+        range = recolorRangeWithDayColor(range, dayIndex);
 
         await addRange(range);
         if (typeof saveRange === 'function') {
