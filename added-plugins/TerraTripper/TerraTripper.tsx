@@ -20,8 +20,8 @@ const TT_useRouteProfile = __PD.useRouteProfile;
 const TT_useRange = __PD.useRange;
 const TT_useRadius = __PD.useRadius;
 
-// Ícones
-const { MdOutlineMap: TT_MdOutlineMap } = (__PD.ReactIcons?.md ?? {}) as any;
+// Ícones: carregados sob demanda pelo host (o plugin-api compila para loadIcons('md'))
+import { MdOutlineMap as TT_MdOutlineMap } from 'react-icons/md';
 
 // Metadados globais de contratos (preenchidos pelo host)
 const __PI: any = (window as any).PluginInterfaces || {};
@@ -57,6 +57,8 @@ const DAY_COLORS: number[][] = TT_PALETTE_15.map((hex) => {
 
 const colorForDay = (i: number) => DAY_COLORS[i % DAY_COLORS.length];
 
+const RAIO_BASE_KM = 10;
+
 const rgbaToHex = ([r, g, b]: number[]) =>
   `#${[r, g, b]
     .map(v =>
@@ -79,6 +81,15 @@ function idForMapPin(
     point?.label ||
     `${point.coordinates?.[0]},${point.coordinates?.[1]}`;
   return `pin::${date ?? 'nodate'}::${dayIndex}::${kind ?? 'poi'}::${base}`;
+}
+
+function baseKey(base: any) {
+  return String(
+    base?.uid ||
+    (Array.isArray(base?.coordinates) ? base.coordinates.join(',') : '') ||
+    base?.id ||
+    base?.label,
+  );
 }
 
 function isBaseId(id?: string) {
@@ -309,6 +320,7 @@ function TerraTripperPluginContent() {
 
   const [radiusLoading, setRadiusLoading] = _R.useState(false);
   const [radiusError, setRadiusError] = _R.useState<string | null>(null);
+  const [radiusMessage, setRadiusMessage] = _R.useState<string | null>(null);
 
   const [showDeps, setShowDeps] = _R.useState(false);
 
@@ -811,12 +823,8 @@ function TerraTripperPluginContent() {
             continue;
           }
 
-          const key =
-            base.id ||
-            base.uid ||
-            base.label ||
-            base.name ||
-            base.coordinates.join(',');
+          // uid primeiro: depois de editar o quadro, o id da base vira "base-start/end-<data>"
+          const key = baseKey(base);
 
           if (seenKeys.has(key)) continue;
           seenKeys.add(key);
@@ -892,6 +900,7 @@ function TerraTripperPluginContent() {
   async function drawRadiusForBases() {
     console.log('[TerraTripper] drawRadiusForBases clicado');
     setRadiusError(null);
+    setRadiusMessage(null);
 
     if (!board || !board.length) {
       setRadiusError('Nenhum roteiro calculado ainda.');
@@ -913,42 +922,29 @@ function TerraTripperPluginContent() {
         await clearRadiusSource();
       }
 
+      const vistas = new Set<string>();
       for (const dia of board) {
         const bases = (dia?.pontos || []).filter((p: any) => p?.tipo === 'base');
         for (const base of bases) {
           if (!base?.coordinates || base.coordinates.length !== 2) continue;
+          if (vistas.has(baseKey(base))) continue;
+          vistas.add(baseKey(base));
 
-          const [lon, lat] = base.coordinates;
-
-          const radiusFeature = {
-            id: `tt-radius-${dia?.data || 'nodate'}-${base.id || lon + '-' + lat}`,
-            name: base.label || base.name || 'Raio da base',
+          // contrato useRadius 2.0: raio em metros; quantity = círculos concêntricos
+          addRadiusFeature({
+            id: `tt-${baseKey(base)}`,
             center: base.coordinates,
-            geojson: {
-              type: 'FeatureCollection',
-              features: [
-                {
-                  type: 'Feature',
-                  geometry: {
-                    type: 'Point',
-                    coordinates: base.coordinates,
-                  },
-                  properties: {
-                    radius_km: 10,
-                    origem: 'TerraTripper',
-                    day: dia?.data,
-                  },
-                },
-              ],
-            },
-          };
-
-          await addRadiusFeature(radiusFeature);
+            radius: RAIO_BASE_KM * 1000,
+            quantity: 1,
+          });
         }
       }
+      setRadiusMessage(
+        `Raio de ${RAIO_BASE_KM} km desenhado em ${vistas.size} base(s).`,
+      );
     } catch (e: any) {
       console.warn('Erro ao desenhar raios das bases:', e);
-      setRadiusError('Falha ao desenhar raios das bases.');
+      setRadiusError(`Falha ao desenhar raios das bases: ${e?.message ?? e}`);
     } finally {
       setRadiusLoading(false);
     }
@@ -1133,7 +1129,7 @@ function TerraTripperPluginContent() {
 
       {formRoteiro && (
         <>
-          <RoteiroResumo roteiro={formRoteiro} directions={directions} />
+          <RoteiroResumo roteiro={formRoteiro} directions={directions} board={board} />
 
           {!mostrarQuadro && (
             <div className="w-full mt-4">
@@ -1223,6 +1219,12 @@ function TerraTripperPluginContent() {
                   </div>
                 )}
 
+                {radiusMessage && (
+                  <div className="mt-1 text-sm text-gray-700">
+                    {radiusMessage}
+                  </div>
+                )}
+
                 {routesSaveMessage && (
                   <div className="mt-2 text-sm text-gray-700">
                     {routesSaveMessage}
@@ -1236,8 +1238,8 @@ function TerraTripperPluginContent() {
                     style={styles.botaoIso}
                   >
                     {rangesLoading
-                      ? 'Gerando Alcances das bases...'
-                      : 'Desenhar Alcance das bases'}
+                      ? 'Gerando alcance das bases...'
+                      : 'Desenhar alcances das bases'}
                   </button>
 
                   <button

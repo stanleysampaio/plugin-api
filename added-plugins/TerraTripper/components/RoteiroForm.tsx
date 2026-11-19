@@ -36,6 +36,8 @@ type PointResult = {
   coordinates?: number[]; // [lon, lat]
   tipo?: 'base' | 'interesse';
   tempo?: number;
+  custo?: number;     // R$ (ingresso para interesse, diária para base)
+  categoria?: string; // ex: natureza, cultura, gastronomia (apenas interesse)
 };
 
 type Roteiro = {
@@ -43,8 +45,20 @@ type Roteiro = {
   dataVolta: string;
   interesses: string;
   tempo: number;
+  orcamento?: number;
   pontos: PointResult[];
 };
+
+const CATEGORIAS_INTERESSE = [
+  'natureza',
+  'cultura',
+  'gastronomia',
+  'aventura',
+  'compras',
+  'vida noturna',
+  'história',
+  'outro',
+];
 
 type Props = { onSubmit: (r: Roteiro) => void };
 
@@ -109,6 +123,7 @@ export function RoteiroForm({ onSubmit }: Props) {
   const [dataVolta, setDataVolta]     = React.useState('');
   const [interesses, setInteresses]   = React.useState('');
   const [tempo, setTempo]             = React.useState(1);
+  const [orcamento, setOrcamento]     = React.useState<number | ''>('');
 
   // Começamos com ORIGEM (base), 1 parada (interesse) e DESTINO (base)
   const [pontos, setPontos] = React.useState<PointResult[]>([
@@ -170,6 +185,22 @@ export function RoteiroForm({ onSubmit }: Props) {
     });
   }
 
+  function updateCusto(index: number, valor: number) {
+    setPontos((prev) => {
+      const next = [...prev];
+      next[index].custo = Math.max(0, valor);
+      return next;
+    });
+  }
+
+  function updateCategoria(index: number, categoria: string) {
+    setPontos((prev) => {
+      const next = [...prev];
+      next[index].categoria = categoria;
+      return next;
+    });
+  }
+
   function addPonto() {
     setPontos((prev) => {
       const next = [...prev];
@@ -189,7 +220,14 @@ export function RoteiroForm({ onSubmit }: Props) {
 
   function handleSubmit(e: any) {
     e.preventDefault();
-    onSubmit({ dataIda, dataVolta, interesses, tempo, pontos });
+    onSubmit({
+      dataIda,
+      dataVolta,
+      interesses,
+      tempo,
+      orcamento: orcamento === '' ? undefined : orcamento,
+      pontos,
+    });
   }
 
   return (
@@ -221,6 +259,18 @@ export function RoteiroForm({ onSubmit }: Props) {
         className="border p-2 rounded"
         min={1}
         placeholder="Tempo estimado (dias)"
+      />
+      <input
+        type="number"
+        value={orcamento}
+        onChange={(e) =>
+          setOrcamento(e.target.value === '' ? '' : Number(e.target.value))
+        }
+        className="border p-2 rounded"
+        min={0}
+        step={10}
+        placeholder="Orçamento total (R$) — opcional"
+        title="Se definido, pontos de interesse acima do orçamento serão deixados de fora do roteiro, priorizando os que combinam com seus interesses"
       />
 
       <div className="flex flex-col gap-2 mt-2">
@@ -298,6 +348,41 @@ export function RoteiroForm({ onSubmit }: Props) {
                     placeholder="Tempo (min)"
                     title="Tempo de permanência no local"
                   />
+                )}
+
+                <input
+                  type="number"
+                  value={ponto.custo ?? ''}
+                  onChange={(e) =>
+                    updateCusto(index, Number(e.target.value))
+                  }
+                  className="text-sm border p-1 rounded w-24"
+                  min={0}
+                  step={1}
+                  placeholder={
+                    ponto.tipo === 'base' ? 'Diária (R$)' : 'Ingresso (R$)'
+                  }
+                  title={
+                    ponto.tipo === 'base'
+                      ? 'Custo da diária nesta base'
+                      : 'Custo de ingresso/consumo neste ponto'
+                  }
+                />
+
+                {ponto.tipo === 'interesse' && (
+                  <select
+                    value={ponto.categoria ?? ''}
+                    onChange={(e) => updateCategoria(index, e.target.value)}
+                    className="text-sm border p-1 rounded"
+                    title="Categoria do ponto, usada para priorizar pontos que combinam com seus interesses"
+                  >
+                    <option value="">Categoria...</option>
+                    {CATEGORIAS_INTERESSE.map((c) => (
+                      <option key={c} value={c}>
+                        {c}
+                      </option>
+                    ))}
+                  </select>
                 )}
               </div>
             </div>

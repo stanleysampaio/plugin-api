@@ -39,11 +39,63 @@ interface Roteiro {
   dataVolta: string;
   interesses?: string;
   tempo?: number; // dias
+  orcamento?: number; // R$
+}
+
+interface BoardPonto {
+  id?: string;
+  uid?: string;
+  tipo?: 'base' | 'interesse';
+  custo?: number;
+  coordinates?: [number, number];
+}
+
+interface BoardDia {
+  data: string;
+  pontos: BoardPonto[];
 }
 
 interface Props {
   roteiro: Roteiro;
   directions?: Direction[];
+  board?: BoardDia[];
+}
+
+const custoDe = (p?: BoardPonto) => (typeof p?.custo === 'number' ? p.custo : 0);
+
+/**
+ * Soma o custo do roteiro final (já filtrado por orçamento/interesses).
+ * O board chega em dois formatos: logo após gerar (ids "point-<uid>") e depois
+ * de qualquer edição no quadro (bases com ids por dia "base-start/end-<data>").
+ * Por isso nada aqui depende do id:
+ * - Ingressos: cada POI conta uma vez, deduplicado pelo uid (estável).
+ * - Diárias: uma por noite, na base em que o dia termina; o último dia não
+ *   conta (é o retorno).
+ */
+function computeCustoTotal(board?: BoardDia[]): number {
+  if (!Array.isArray(board)) return 0;
+
+  const poisVistos = new Set<string>();
+  let total = 0;
+
+  board.forEach((dia, i) => {
+    const pontos = dia?.pontos ?? [];
+
+    for (const p of pontos) {
+      if (p?.tipo !== 'interesse') continue;
+      const chave = p.uid ?? p.id ?? String(p.coordinates);
+      if (poisVistos.has(chave)) continue;
+      poisVistos.add(chave);
+      total += custoDe(p);
+    }
+
+    if (i < board.length - 1) {
+      const pernoite = [...pontos].reverse().find((p) => p?.tipo === 'base');
+      total += custoDe(pernoite);
+    }
+  });
+
+  return total;
 }
 
 /* ---------- Helpers de distância (Haversine) ---------- */
@@ -93,15 +145,25 @@ function getDayColorsLegend(): Array<{ day: string; color: string; legs: number 
 }
 
 /* ---------- Helpers de formatação ---------- */
+// "YYYY-MM-DD" como data local: new Date("YYYY-MM-DD") é meia-noite UTC e
+// cai no dia anterior no fuso do Brasil.
+function parseIsoLocal(dateStr?: string): Date | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr ?? '');
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : undefined;
+}
+
 function formatDate(dateStr?: string) {
   if (!dateStr) return '-';
-  try {
-    const d = new Date(dateStr);
-    if (Number.isNaN(d.getTime())) return dateStr;
-    return d.toLocaleDateString('pt-BR');
-  } catch {
-    return dateStr;
+  return parseIsoLocal(dateStr)?.toLocaleDateString('pt-BR') ?? dateStr;
+}
+
+function diasDaViagem(roteiro?: Roteiro): number {
+  const ida = parseIsoLocal(roteiro?.dataIda);
+  const volta = parseIsoLocal(roteiro?.dataVolta);
+  if (ida && volta && volta >= ida) {
+    return Math.round((volta.getTime() - ida.getTime()) / 86_400_000) + 1;
   }
+  return roteiro?.tempo || 1;
 }
 
 function labelFromPoint(p?: PointResult): string {
@@ -120,7 +182,7 @@ function labelFromPoint(p?: PointResult): string {
 }
 
 /* ---------- Componente principal ---------- */
-export function RoteiroResumo({ roteiro, directions = [] }: Props) {
+export function RoteiroResumo({ roteiro, directions = [], board }: Props) {
   const pontos = roteiro?.pontos ?? [];
   const total = pontos.length;
 
@@ -171,6 +233,27 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
   const minutos = totalMin % 60;
 
   const legend = getDayColorsLegend();
+
+  // POIs do formulário que não estão no roteiro gerado (orçamento ou removidos do quadro)
+  const uidsNoRoteiro = Array.isArray(board)
+    ? new Set(board.flatMap((d) => d?.pontos ?? []).map((p) => p?.uid).filter(Boolean))
+    : undefined;
+  const foraDoRoteiro = (p: PointResult) =>
+    !!uidsNoRoteiro && !!p.uid && !uidsNoRoteiro.has(p.uid);
+
+  const custoTotal = computeCustoTotal(board);
+  const temOrcamento = typeof roteiro?.orcamento === 'number' && roteiro.orcamento > 0;
+  const custoFormatado = custoTotal.toLocaleString('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  });
+  const orcamentoFormatado = temOrcamento
+    ? roteiro.orcamento!.toLocaleString('pt-BR', {
+        style: 'currency',
+        currency: 'BRL',
+      })
+    : undefined;
+  const dentroDoOrcamento = temOrcamento ? custoTotal <= roteiro.orcamento! : true;
 
   return (
     <section className="mt-4 space-y-4">
@@ -232,8 +315,28 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
             </div>
             <div className="flex justify-between">
               <span className="font-medium">Duração planejada:</span>
-              <span>{roteiro?.tempo || 1} dia(s)</span>
+              <span>{diasDaViagem(roteiro)} dia(s)</span>
             </div>
+            <div className="flex justify-between">
+              <span className="font-medium">Custo estimado:</span>
+              <span
+                className={
+                  dentroDoOrcamento ? 'text-slate-700' : 'font-semibold text-rose-600'
+                }
+              >
+                {custoFormatado}
+                {temOrcamento ? ` / ${orcamentoFormatado}` : ''}
+              </span>
+            </div>
+            <div className="text-[10px] text-slate-400">
+              Ingressos + uma diária por noite, na base onde cada dia termina.
+            </div>
+            {temOrcamento && !dentroDoOrcamento && (
+              <div className="text-[10px] text-rose-600">
+                Orçamento excedido pelas diárias das bases — os ingressos já
+                foram filtrados para caber no limite informado.
+              </div>
+            )}
           </div>
 
           {roteiro?.interesses && (
@@ -305,7 +408,10 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
             )}
 
             {paradas.map((p, idx) => (
-              <li key={p.uid ?? idx} className="flex items-start gap-2">
+              <li
+                key={p.uid ?? idx}
+                className={`flex items-start gap-2${foraDoRoteiro(p) ? ' opacity-50' : ''}`}
+              >
                 <span className="mt-[2px] h-2 w-2 rounded-full bg-blue-500" />
                 <div>
                   <div className="font-semibold text-slate-800">
@@ -315,6 +421,11 @@ export function RoteiroResumo({ roteiro, directions = [] }: Props) {
                         ({p.tempo} min)
                       </span>
                     ) : null}
+                    {foraDoRoteiro(p) && (
+                      <span className="text-[10px] text-rose-600 ml-1">
+                        — fora do roteiro
+                      </span>
+                    )}
                   </div>
                   <div className="text-[11px] text-slate-600">
                     {labelFromPoint(p)}

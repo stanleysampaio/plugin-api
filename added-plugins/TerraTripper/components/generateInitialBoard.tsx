@@ -97,6 +97,77 @@ function packIntoDays(ordered: PontoRoteiro[], numDays: number): PontoRoteiro[][
   return buckets;
 }
 
+/* ---------------- multicritério: interesses + orçamento ---------------- */
+
+/** Extrai palavras-chave do texto livre de interesses (ex: "natureza, cultura") */
+function parseInteressesKeywords(interesses?: string): string[] {
+  if (!interesses) return [];
+  return interesses
+    .toLowerCase()
+    .split(/[,;\n]+/)
+    .map((kw) => kw.trim())
+    .filter(Boolean);
+}
+
+/** Quantas palavras-chave de interesse aparecem na categoria/rótulo do ponto */
+function interestMatchScore(p: PontoRoteiro, keywords: string[]): number {
+  if (!keywords.length) return 0;
+  const haystack = `${p.categoria ?? ''} ${p.label ?? ''}`.toLowerCase();
+  let score = 0;
+  for (const kw of keywords) {
+    if (kw && haystack.includes(kw)) score += 1;
+  }
+  return score;
+}
+
+/**
+ * Reordena os pontos de interesse priorizando quem combina com os
+ * interesses informados pelo usuário (critério adicional ao de distância,
+ * que continua sendo aplicado depois por orderByNearestFromBase).
+ * Não altera a ordem relativa entre pontos com o mesmo score (sort estável).
+ */
+function prioritizeByInterest(
+  pois: PontoRoteiro[],
+  interesses?: string
+): PontoRoteiro[] {
+  const keywords = parseInteressesKeywords(interesses);
+  if (!keywords.length) return pois;
+
+  return pois
+    .map((p, idx) => ({ p, idx, score: interestMatchScore(p, keywords) }))
+    .sort((a, b) => (b.score - a.score) || (a.idx - b.idx))
+    .map((x) => x.p);
+}
+
+/**
+ * Aplica um orçamento total (opcional) sobre os pontos de interesse,
+ * mantendo-os na ordem recebida (idealmente já priorizada por interesse)
+ * e descartando, de forma gulosa, os que estourariam o orçamento.
+ * Custo de bases (hospedagem) não é descontado aqui, pois o número de
+ * diárias por base só é conhecido depois da alocação de dias.
+ */
+function applyBudget(
+  pois: PontoRoteiro[],
+  orcamento?: number
+): PontoRoteiro[] {
+  if (typeof orcamento !== 'number' || !Number.isFinite(orcamento) || orcamento <= 0) {
+    return pois;
+  }
+
+  const incluidos: PontoRoteiro[] = [];
+  let acumulado = 0;
+
+  for (const p of pois) {
+    const custo = typeof p.custo === 'number' ? p.custo : 0;
+    if (acumulado + custo <= orcamento) {
+      incluidos.push(p);
+      acumulado += custo;
+    }
+  }
+
+  return incluidos;
+}
+
 /** Necessidade mínima de dias por base (ceil(totalMin/600), no mínimo 1 se houver POI) */
 function neededDaysForBase(pois: PontoRoteiro[]) {
   if (!pois?.length) return 1;
@@ -183,7 +254,7 @@ function sincronizarBasesEntreDias(board: BoardColumn[]): BoardColumn[] {
 
 /* ---------------- função principal ---------------- */
 export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColumn[]> {
-  const { dataIda, dataVolta, pontos } = roteiro;
+  const { dataIda, dataVolta, pontos, interesses, orcamento } = roteiro;
 
   const dates = datesInclusive(dataIda, dataVolta);
   const totalDays = Math.max(1, dates.length);
@@ -198,7 +269,16 @@ export async function generateInitialBoard(roteiro: Roteiro): Promise<BoardColum
 
   // separa bases (na ORDEM que chegaram!) e POIs
   const bases = pontos.filter((p) => p.tipo === 'base');
-  const poisAll = pontos.filter((p) => p.tipo === 'interesse');
+
+  // multicritério: prioriza por interesse do usuário e depois aplica o
+  // orçamento (se informado), descartando POIs excedentes de forma gulosa
+  const poisAll = applyBudget(
+    prioritizeByInterest(
+      pontos.filter((p) => p.tipo === 'interesse'),
+      interesses
+    ),
+    orcamento
+  );
 
   // mapeador estável para pointIndex
   const pointIndexOf = (pt: PontoRoteiro) => {

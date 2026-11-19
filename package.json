@@ -5,7 +5,13 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "test:terratripper": "node tests/terratripper/run-unit.cjs",
+    "test:terratripper:e2e": "node tests/terratripper/e2e.cjs",
+    "test:compiler": "node tests/transpile.test.cjs",
+    "test:sdk:e2e": "node tests/sdk-e2e.cjs",
+    "test:geotools:e2e": "node tests/geotools-e2e.cjs",
+    "test:contracts:e2e": "node tests/contracts-e2e.cjs"
   },
   "keywords": [],
   "author": "",

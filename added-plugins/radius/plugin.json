@@ -1,0 +1,8 @@
+{
+  "title": "Calcular raio",
+  "description": "Círculos concêntricos de distância a partir de um ponto.",
+  "version": "1.0.0",
+  "icon": "md:MdDonutLarge",
+  "order": 50,
+  "showInMenu": false
+}

@@ -11,6 +11,8 @@ export interface PontoRoteiro {
   tipo: TipoPonto;
   tempo?: number;                    // Em minutos (apenas para pontos de interesse)
   fixo?: boolean;                    // ponto "ancora" (não pode ser movido)
+  custo?: number;                    // R$ (ingresso para 'interesse', diária para 'base')
+  categoria?: string;                // Ex: natureza, cultura, gastronomia (apenas 'interesse')
 }
 
 // Representa a agenda de um único dia
@@ -43,6 +45,7 @@ export interface Roteiro {
   dataVolta: string;                 // YYYY-MM-DD
   interesses: string;
   tempo: number;
+  orcamento?: number;                // R$, orçamento total opcional da viagem
   // pontos originais vindos do PluginMapInput (sem tipagem forte ainda)
   // normalmente terão shape compatível com PontoRoteiro
   pontos: any[];

@@ -29,6 +29,8 @@ export function convertToDiaRoteiro(
         tempo: item.time,
         fixo: item.fixo,
         coordinates: original?.coordinates ?? [0, 0],
+        custo: original?.custo,
+        categoria: original?.categoria,
       };
     });
 
