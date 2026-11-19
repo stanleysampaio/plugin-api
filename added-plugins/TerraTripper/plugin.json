@@ -1,0 +1,7 @@
+{
+  "title": "TerraTripper",
+  "description": "Planejador de viagens terrestres de múltiplos dias: rotas, alcances, quadro de horários, orçamento e interesses.",
+  "version": "1.1.0",
+  "icon": "md:MdOutlineMap",
+  "order": 100
+}

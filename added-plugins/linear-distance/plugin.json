@@ -1,0 +1,8 @@
+{
+  "title": "Distância linear",
+  "description": "Distância em linha reta entre dois pontos.",
+  "version": "1.0.0",
+  "icon": "md:MdOutlineStraighten",
+  "order": 51,
+  "showInMenu": false
+}

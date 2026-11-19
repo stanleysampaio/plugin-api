@@ -3,10 +3,10 @@ const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
 const cors = require("cors");
-const babel = require("@babel/core");
+const { compilePlugin, errorModule } = require("./transpile");
 
 const app = express();
-const PORT = 4000;
+const PORT = process.env.PORT || 4000;
 
 // Middleware para CORS e Content Security Policy (CSP)
 app.use(cors());
@@ -23,6 +23,40 @@ const upload = multer({
 
 const pluginsDir = path.resolve(__dirname, "../added-plugins");
 
+// Nomes vêm da URL/formulário e viram caminhos em disco: só aceitamos nomes simples.
+const SAFE_ID = /^[A-Za-z0-9_-]+$/;
+const SAFE_FILE = /^[A-Za-z0-9_-]+(\.[A-Za-z0-9]+)*$/;
+
+function pluginPath(pluginId, ...rest) {
+  if (!SAFE_ID.test(pluginId)) return null;
+  for (const part of rest) if (!SAFE_FILE.test(part)) return null;
+  return path.join(pluginsDir, pluginId, ...rest);
+}
+
+function readManifest(pluginId) {
+  const file = pluginPath(pluginId, "plugin.json");
+  if (!file || !fs.existsSync(file)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf-8"));
+  } catch (error) {
+    console.error(`plugin.json inválido em "${pluginId}":`, error.message);
+    return {};
+  }
+}
+
+function sendCompiled(res, filePath) {
+  res.setHeader("Content-Type", "application/javascript");
+  try {
+    res.status(200).send(compilePlugin(fs.readFileSync(filePath, "utf-8"), filePath));
+  } catch (error) {
+    console.error(`Erro ao compilar ${path.relative(pluginsDir, filePath)}:`, error.message);
+    // 200 de propósito: um import() que recebe 500 vira um erro genérico no navegador;
+    // assim a mensagem real chega ao ErrorBoundary do host.
+    res.setHeader("X-Plugin-Compile-Error", "1");
+    res.status(200).send(errorModule(error.message));
+  }
+}
+
 // Endpoint para criar um plugin
 app.post(
   "/api/plugins",
@@ -37,6 +71,17 @@ app.post(
         return res.status(400).send({
           error: "Nome do plugin e arquivo principal são obrigatórios.",
         });
+      }
+
+      if (!SAFE_ID.test(pluginName)) {
+        return res.status(400).send({
+          error: "Nome do plugin inválido: use apenas letras, números, '-' e '_'.",
+        });
+      }
+
+      const invalid = componentFiles.find((c) => !SAFE_FILE.test(c.originalname));
+      if (invalid) {
+        return res.status(400).send({ error: `Nome de arquivo inválido: "${invalid.originalname}".` });
       }
 
       const pluginDir = path.join(pluginsDir, pluginName);
@@ -75,11 +120,15 @@ app.post(
   }
 );
 
-// Listar plugins disponíveis
+// Listar plugins disponíveis (id + metadados do plugin.json, quando houver)
 app.get("/api/plugins", (req, res) => {
   try {
-    const pluginFolders = fs.readdirSync(pluginsDir);
-    const plugins = pluginFolders.map((folder) => ({ id: folder }));
+    const plugins = fs
+      .readdirSync(pluginsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && SAFE_ID.test(d.name))
+      .filter((d) => fs.existsSync(path.join(pluginsDir, d.name, `${d.name}.tsx`)))
+      .map((d) => ({ ...readManifest(d.name), id: d.name }))
+      .sort((a, b) => (a.order ?? 1000) - (b.order ?? 1000) || a.id.localeCompare(b.id));
     res.status(200).send(plugins);
   } catch (error) {
     console.error("Erro ao listar plugins:", error);
@@ -87,124 +136,37 @@ app.get("/api/plugins", (req, res) => {
   }
 });
 
-// Servir arquivos estáticos da pasta de plugins
-app.use("/plugins", express.static(pluginsDir));
-
-// Retornar o conteúdo do arquivo principal do plugin como um módulo JS
+// Retornar o arquivo principal do plugin como um módulo JS
 app.get("/plugins/:pluginId/main.js", (req, res) => {
-  const pluginId = req.params.pluginId;
-  const pluginDir = path.join(pluginsDir, pluginId);
-  const pluginFilePath = path.join(pluginDir, `${pluginId}.tsx`);
+  const { pluginId } = req.params;
+  const pluginFilePath = pluginPath(pluginId, `${pluginId}.tsx`);
 
-  if (!fs.existsSync(pluginFilePath)) {
+  if (!pluginFilePath || !fs.existsSync(pluginFilePath)) {
     return res
       .status(404)
       .send({ error: "Arquivo principal do plugin não encontrado." });
   }
-
-  try {
-    let tsxContent = fs.readFileSync(pluginFilePath, "utf-8");
-
-    // 🔹 Remove imports padrão (React, etc)
-    tsxContent = tsxContent.replace(/^import\s.+from\s+['"](@|react|[^.\/]).+['"];/gm, "");
-
-    // 🔹 Evita redefinições de variáveis injetadas
-    const dependencyKeys = [
-      "React",
-      "ReactIcons",
-      "GoBackButton",
-      "SimpleButton",
-      "useMenu",
-    ];
-
-    dependencyKeys.forEach((dep) => {
-      const regex = new RegExp(
-        `const\\s+\\{[^}]*\\b${dep}\\b[^}]*}\\s*=\\s*window\\.PluginDependencies\\s*;?`,
-        "g"
-      );
-      tsxContent = tsxContent.replace(regex, "");
-    });
-
-    // 🔹 Injeta dependências globais
-    const injectDependencies = `
-      const { React, ReactIcons, GoBackButton, SimpleButton, useMenu } = window.PluginDependencies;
-    `;
-
-    // 🔹 Garante exportação default
-    const hasExportDefault = tsxContent.includes("export default");
-    if (!hasExportDefault) {
-      tsxContent += `\nexport default function DefaultPlugin() { return <div>Plugin sem exportação</div>; }`;
-    }
-
-    const wrappedCode = `${injectDependencies.trim()}\n${tsxContent.trim()}`;
-
-    // 🔹 Transpila via Babel com suporte a JSX/TSX e import relativo
-    const result = babel.transformSync(wrappedCode, {
-      presets: ["@babel/preset-react", "@babel/preset-typescript"],
-      filename: pluginFilePath,  // 🔸 necessário para resolver paths relativos
-      cwd: pluginDir             // 🔸 garante base correta para import "./components"
-    });
-
-    res.setHeader("Content-Type", "application/javascript");
-    res.status(200).send(result.code);
-  } catch (error) {
-    console.error("Erro ao compilar plugin:", error);
-    res.status(500).send({ error: "Erro ao compilar o plugin." });
-  }
+  sendCompiled(res, pluginFilePath);
 });
 
+// Componentes auxiliares: './components/X' ou './components/X.js' -> X.tsx ou X.ts
 app.get("/plugins/:pluginId/components/:fileName", (req, res) => {
   const { pluginId, fileName } = req.params;
+  const baseName = fileName.replace(/\.(js|tsx?)$/, "");
 
-  // Permitir importações do tipo './components/BlocoResumo.js' mesmo que o arquivo seja .tsx
-  const baseName = fileName.replace(/\.js$/, "");
-  const tsxFilePath = path.join(pluginsDir, pluginId, "components", `${baseName}.tsx`);
+  const candidates = [`${baseName}.tsx`, `${baseName}.ts`]
+    .map((f) => pluginPath(pluginId, "components", f))
+    .filter(Boolean);
+  const filePath = candidates.find((f) => fs.existsSync(f));
 
-  if (!fs.existsSync(tsxFilePath)) {
+  if (!filePath) {
     return res.status(404).send("Componente não encontrado.");
   }
-
-  try {
-    let code = fs.readFileSync(tsxFilePath, "utf-8");
-
-    // Remove imports padrão (React etc.)
-    code = code.replace(/^import\s.+from\s+['"](@|react|[^.\/]).+['"];/gm, "");
-
-    // Remove possíveis redefinições de variáveis globais
-    const dependencyKeys = [
-      "React",
-      "ReactIcons",
-      "GoBackButton",
-      "SimpleButton",
-      "useMenu",
-    ];
-    dependencyKeys.forEach((dep) => {
-      const regex = new RegExp(
-        `const\\s+\\{[^}]*\\b${dep}\\b[^}]*}\\s*=\\s*window\\.PluginDependencies\\s*;?`,
-        "g"
-      );
-      code = code.replace(regex, "");
-    });
-
-    // Injeta dependências globais
-    const inject = `const { React, ReactIcons, GoBackButton, SimpleButton, useMenu } = window.PluginDependencies;`;
-
-    const wrapped = `${inject}\n${code}`;
-
-    const compiled = babel.transformSync(wrapped, {
-      presets: ["@babel/preset-react", "@babel/preset-typescript"],
-      filename: `${baseName}.tsx`,
-    });
-
-    res.setHeader("Content-Type", "application/javascript");
-    res.send(compiled.code);
-  } catch (err) {
-    console.error("Erro ao compilar componente:", err);
-    res.status(500).send("Erro ao compilar componente.");
-  }
+  sendCompiled(res, filePath);
 });
 
-
+// Arquivos estáticos (imagens, json...) da pasta do plugin
+app.use("/plugins", express.static(pluginsDir));
 
 //start na api-plugin
 app.listen(PORT, () => {

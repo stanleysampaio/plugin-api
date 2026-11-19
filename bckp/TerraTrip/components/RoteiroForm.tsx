@@ -1,11 +1,14 @@
 const PluginMapInput = window.PluginDependencies.PluginMapInput;
 
 interface PointResult {
+  uid: string;
   label?: string;
   name?: string;
   city?: string;
   uf?: string;
-  coordinates: number[];
+  coordinates?: number[];
+  tipo?: 'base' | 'interesse';
+  tempo?: number;
 }
 
 interface Roteiro {
@@ -20,14 +23,18 @@ interface Props {
   onSubmit: (roteiro: Roteiro) => void;
 }
 
+function generateUid() {
+  return Math.random().toString(36).substring(2, 9);
+}
+
 export function RoteiroForm({ onSubmit }: Props) {
   const [dataIda, setDataIda] = React.useState('');
   const [dataVolta, setDataVolta] = React.useState('');
   const [interesses, setInteresses] = React.useState('');
   const [tempo, setTempo] = React.useState(1);
   const [pontos, setPontos] = React.useState<PointResult[]>([
-    { label: '', coordinates: [] },
-    { label: '', coordinates: [] },
+    { uid: generateUid(), tipo: 'base' },
+    { uid: generateUid(), tipo: 'interesse', tempo: 60 },
   ]);
 
   function updatePoint(index: number, newValue?: PointResult) {
@@ -37,23 +44,46 @@ export function RoteiroForm({ onSubmit }: Props) {
 
     const label =
       newValue.label ||
-      [
-        newValue.name,
-        newValue.city,
-        newValue.uf,
-      ]
-        .filter(Boolean)
-        .join(', ') ||
+      [newValue.name, newValue.city, newValue.uf].filter(Boolean).join(', ') ||
       `${newValue.coordinates[1].toFixed(6)}, ${newValue.coordinates[0].toFixed(6)}`;
 
-    updated[index] = { ...newValue, label };
+    updated[index] = {
+      ...updated[index],
+      ...newValue,
+      label,
+    };
+
+    setPontos(updated);
+  }
+
+  function updateTipo(index: number, tipo: 'base' | 'interesse') {
+    const updated = [...pontos];
+    updated[index].tipo = tipo;
+
+    if (tipo === 'interesse' && !updated[index].tempo) {
+      updated[index].tempo = 60;
+    }
+    if (tipo === 'base') {
+      delete updated[index].tempo;
+    }
+
+    setPontos(updated);
+  }
+
+  function updateTempo(index: number, tempo: number) {
+    const updated = [...pontos];
+    updated[index].tempo = tempo;
     setPontos(updated);
   }
 
   function addPonto() {
     setPontos((prev) => {
       const updated = [...prev];
-      updated.splice(updated.length - 1, 0, { label: '', coordinates: [] }); // inserir antes do destino
+      updated.splice(updated.length - 1, 0, {
+        uid: generateUid(),
+        tipo: 'interesse',
+        tempo: 60,
+      });
       return updated;
     });
   }
@@ -107,12 +137,15 @@ export function RoteiroForm({ onSubmit }: Props) {
           else if (index === pontos.length - 1) label = 'Destino';
 
           return (
-            <div key={index} className="flex flex-col gap-1 w-full">
+            <div key={ponto.uid} className="flex flex-col gap-1 w-full border p-2 rounded">
               <span className="text-xs font-semibold text-gray-600">{label}</span>
+
               <div className="flex items-center gap-2">
                 <PluginMapInput
-                  id={`point-${index}`}
-                  selectedValue={ponto}
+                  id={`point-${ponto.uid}`}
+                  selectedValue={
+                    ponto.coordinates?.length ? ponto : undefined
+                  }
                   onSelectValue={(val: PointResult) => updatePoint(index, val)}
                   onUnselectValue={() => removePonto(index)}
                 />
@@ -124,6 +157,30 @@ export function RoteiroForm({ onSubmit }: Props) {
                   >
                     Remover
                   </button>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <select
+                  value={ponto.tipo}
+                  onChange={(e) => updateTipo(index, e.target.value as 'base' | 'interesse')}
+                  className="text-sm border p-1 rounded"
+                >
+                  <option value="base">Ponto Base</option>
+                  <option value="interesse">Ponto de Interesse</option>
+                </select>
+
+                {ponto.tipo === 'interesse' && (
+                  <input
+                    type="number"
+                    value={ponto.tempo ?? 60}
+                    onChange={(e) => updateTempo(index, Number(e.target.value))}
+                    className="text-sm border p-1 rounded w-20"
+                    min={5}
+                    step={5}
+                    placeholder="Tempo (min)"
+                    title="Tempo de permanência no local"
+                  />
                 )}
               </div>
             </div>

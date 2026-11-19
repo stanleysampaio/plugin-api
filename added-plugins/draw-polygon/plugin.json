@@ -1,0 +1,8 @@
+{
+  "title": "Desenhar polígonos",
+  "description": "Desenho livre de polígonos no mapa.",
+  "version": "1.0.0",
+  "icon": "fa:FaDrawPolygon",
+  "order": 52,
+  "showInMenu": false
+}
